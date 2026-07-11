@@ -20,8 +20,9 @@ android {
 
         externalNativeBuild {
             cmake {
-                // Keep it simple/small: build for the two ABIs real phones use.
-                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                // arm64/arm for phones; x86_64 so the native lib runs on ChromeOS
+                // Android (ARCVM) on an x86_64 Chromebook.
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
                 arguments += "-DANDROID_STL=none"
             }
         }
