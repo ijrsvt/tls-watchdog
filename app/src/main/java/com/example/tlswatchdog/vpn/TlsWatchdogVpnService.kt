@@ -26,6 +26,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private lateinit var repo: FlowRepository
     private lateinit var attribution: Attribution
     private var running = false
+    private var recordCleartext = false
 
     override fun onCreate() {
         super.onCreate()
@@ -48,6 +49,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private fun startVpn() {
         if (running) return
         val selected = runBlocking { AppSelection.get(this@TlsWatchdogVpnService) }
+        recordCleartext = runBlocking { AppSelection.getRecord(this@TlsWatchdogVpnService) }
         if (selected.isEmpty()) {
             Log.w(TAG, "no apps selected; not starting")
             stopSelf()
@@ -82,15 +84,17 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             return
         }
 
+        val statusText = "Monitoring $added app(s)" + if (recordCleartext) " · recording cleartext" else ""
         ServiceCompat.startForeground(
             this,
             Notifications.FOREGROUND_ID,
-            Notifications.foreground(this, "Monitoring $added app(s)"),
+            Notifications.foreground(this, statusText),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
 
+        val sampleBytes = if (recordCleartext) RECORD_SAMPLE_BYTES else CLASSIFY_SAMPLE_BYTES
         val fd = pfd.detachFd()
-        NativeBridge.nativeStartCapture(fd, MTU, this)
+        NativeBridge.nativeStartCapture(fd, MTU, sampleBytes, this)
         running = true
         VpnController.setRunning(true)
         Log.i(TAG, "VPN started, monitoring $added apps")
@@ -137,6 +141,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             val verdict = FlowClassifier.classify(proto, firstBytes)
             val uid = attribution.uidFor(proto, srcIp, srcPort, dstIp, dstPort)
             val (pkg, label) = attribution.appFor(uid)
+            val sample = if (recordCleartext && verdict.isOffender) firstBytes.toPreview() else null
             repo.insert(
                 FlowEntity(
                     timestamp = System.currentTimeMillis(),
@@ -150,6 +155,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     verdict = verdict.name,
                     isOffender = verdict.isOffender,
                     firstBytesHex = firstBytes.toHex(),
+                    sampleText = sample,
                 ),
             )
             if (verdict.isOffender) {
@@ -165,9 +171,20 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private fun ByteArray.toHex(): String =
         joinToString("") { "%02x".format(it) }
 
+    /** Decode to a printable preview: keep ASCII text + newlines/tabs, replace the rest with '.'. */
+    private fun ByteArray.toPreview(): String =
+        buildString(size) {
+            for (b in this@toPreview) {
+                val c = b.toInt() and 0xff
+                append(if (c in 0x20..0x7e || c == 0x0a || c == 0x0d || c == 0x09) c.toChar() else '.')
+            }
+        }
+
     companion object {
         private const val TAG = "TlsWatchdogVpn"
         const val MTU = 1500
+        const val CLASSIFY_SAMPLE_BYTES = 64     // just enough to classify
+        const val RECORD_SAMPLE_BYTES = 2048     // capture request line + headers
         const val ACTION_START = "com.example.tlswatchdog.START"
         const val ACTION_STOP = "com.example.tlswatchdog.STOP"
     }

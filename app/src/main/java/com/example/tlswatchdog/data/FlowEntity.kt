@@ -17,4 +17,6 @@ data class FlowEntity(
     val verdict: String,
     val isOffender: Boolean,
     val firstBytesHex: String,
+    /** Decoded printable preview of the cleartext payload; null unless recording was on. */
+    val sampleText: String? = null,
 )

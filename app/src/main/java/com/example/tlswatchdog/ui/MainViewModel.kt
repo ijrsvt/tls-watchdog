@@ -30,6 +30,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val selected: StateFlow<Set<String>> =
         AppSelection.observe(app).stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
+    val recordCleartext: StateFlow<Boolean> =
+        AppSelection.observeRecord(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
     val apps: StateFlow<List<AppItem>> = _apps
 
@@ -68,13 +71,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         AppSelection.set(getApplication(), current)
     }
 
+    fun setRecordCleartext(enabled: Boolean) = viewModelScope.launch {
+        AppSelection.setRecord(getApplication(), enabled)
+    }
+
     fun clearFlows() = viewModelScope.launch { repo.clear() }
 
     suspend fun exportCsv(uri: Uri) = withContext(Dispatchers.IO) {
         val rows = repo.snapshot()
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         val sb = StringBuilder()
-        sb.append("time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender,first_bytes_hex\n")
+        sb.append("time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender,first_bytes_hex,sample_text\n")
         for (r in rows) {
             sb.append(fmt.format(Date(r.timestamp))).append(',')
                 .append(csv(r.appLabel)).append(',')
@@ -86,7 +93,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .append(r.proto).append(',')
                 .append(r.verdict).append(',')
                 .append(r.isOffender).append(',')
-                .append(r.firstBytesHex).append('\n')
+                .append(r.firstBytesHex).append(',')
+                .append(csv(r.sampleText)).append('\n')
         }
         getApplication<Application>().contentResolver.openOutputStream(uri)?.use {
             it.write(sb.toString().toByteArray())
@@ -95,6 +103,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun csv(s: String?): String {
         val v = s ?: ""
-        return if (v.contains(',') || v.contains('"')) "\"" + v.replace("\"", "\"\"") + "\"" else v
+        val needsQuote = v.any { it == ',' || it == '"' || it == '\n' || it == '\r' }
+        return if (needsQuote) "\"" + v.replace("\"", "\"\"") + "\"" else v
     }
 }

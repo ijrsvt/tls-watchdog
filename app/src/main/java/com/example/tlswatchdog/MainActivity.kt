@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -107,6 +109,7 @@ private fun App(modifier: Modifier = Modifier) {
 private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
     val running by vm.running.collectAsState()
     val selected by vm.selected.collectAsState()
+    val record by vm.recordCleartext.collectAsState()
     val context = LocalContext.current
 
     Column(
@@ -122,7 +125,33 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("${selected.size} app(s) selected")
         Spacer(Modifier.height(24.dp))
+
+        // Second toggle: capture a sample of each cleartext payload.
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Switch(
+                checked = record,
+                onCheckedChange = { vm.setRecordCleartext(it) },
+                enabled = !running,
+            )
+            Spacer(Modifier.height(0.dp))
+            Text("  Record cleartext content", fontWeight = FontWeight.Medium)
+        }
+        Text(
+            "Captures ~2 KB of each non-TLS flow (URLs, headers, maybe secrets). Stored locally.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Spacer(Modifier.height(24.dp))
+
         if (running) {
+            if (record) {
+                Text("Recording cleartext", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+            }
             Button(onClick = { VpnController.stop(context) }) { Text("Stop") }
         } else {
             Button(onClick = onStart, enabled = selected.isNotEmpty()) { Text("Start monitoring") }
@@ -200,17 +229,36 @@ private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 @Composable
 private fun FlowRow(f: FlowEntity) {
     val color = if (f.isOffender) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+    var expanded by remember { mutableStateOf(false) }
+    val hasSample = !f.sampleText.isNullOrBlank()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .then(if (hasSample) Modifier.clickable { expanded = !expanded } else Modifier)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(f.appLabel ?: f.packageName ?: "uid ${f.uid}", fontWeight = FontWeight.Medium)
             Text(f.verdict, color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         }
         Text(
-            "${f.dstIp}:${f.dstPort}  ·  ${timeFmt.format(Date(f.timestamp))}",
+            "${f.dstIp}:${f.dstPort}  ·  ${timeFmt.format(Date(f.timestamp))}" +
+                if (hasSample) "  ·  tap to ${if (expanded) "hide" else "view"} payload" else "",
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.outline,
         )
+        if (hasSample) {
+            val text = f.sampleText!!
+            Text(
+                if (expanded) text else text.lineSequence().first().take(80),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                color = color,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
     }
     HorizontalDivider()
 }

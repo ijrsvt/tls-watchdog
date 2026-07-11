@@ -14,7 +14,7 @@ object NativeBridge {
      * [callbacks] receives socket-protect requests and per-flow reports,
      * invoked on the native capture thread.
      */
-    external fun nativeStartCapture(tunFd: Int, mtu: Int, callbacks: VpnCallbacks)
+    external fun nativeStartCapture(tunFd: Int, mtu: Int, sampleBytes: Int, callbacks: VpnCallbacks)
 
     /** Stop the capture loop, join the thread and close the TUN fd. */
     external fun nativeStopCapture()

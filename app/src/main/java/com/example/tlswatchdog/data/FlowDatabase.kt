@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [FlowEntity::class], version = 1, exportSchema = false)
+@Database(entities = [FlowEntity::class], version = 2, exportSchema = false)
 abstract class FlowDatabase : RoomDatabase() {
     abstract fun flowDao(): FlowDao
 
@@ -19,7 +19,7 @@ abstract class FlowDatabase : RoomDatabase() {
                     context.applicationContext,
                     FlowDatabase::class.java,
                     "flows.db",
-                ).build().also { instance = it }
+                ).fallbackToDestructiveMigration().build().also { instance = it }
             }
     }
 }

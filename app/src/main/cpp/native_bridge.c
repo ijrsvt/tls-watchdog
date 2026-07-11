@@ -28,7 +28,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define READ_BUF_SIZE 65536
-#define L7_SNAP_MAX   64
+#define L7_SNAP_MAX   4096   // upper bound on the per-flow payload sample
 #define PURGE_INTERVAL_SEC 5
 
 static JavaVM *g_vm = NULL;
@@ -37,6 +37,7 @@ typedef struct {
     int tun_fd;
     int stop_pipe[2];
     int mtu;
+    int sample_bytes;       // how many bytes of the first payload to capture
     volatile int running;
     pthread_t thread;
 
@@ -167,7 +168,8 @@ static void capture_loop(capture_ctx *c) {
                 int snaplen = 0;
                 zdtun_5tuple_t tuple;
                 if (is_tcp_data) {
-                    snaplen = pinfo.l7_len < L7_SNAP_MAX ? pinfo.l7_len : L7_SNAP_MAX;
+                    int cap = c->sample_bytes;
+                    snaplen = pinfo.l7_len < cap ? pinfo.l7_len : cap;
                     memcpy(snap, pinfo.l7, snaplen);
                     tuple = pinfo.tuple;  // struct copy, survives forwarding
                 }
@@ -226,7 +228,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
 JNIEXPORT void JNICALL
 Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
-        JNIEnv *env, jobject thiz, jint tun_fd, jint mtu, jobject callbacks) {
+        JNIEnv *env, jobject thiz, jint tun_fd, jint mtu, jint sample_bytes, jobject callbacks) {
     if (g_ctx.running) {
         LOGE("capture already running");
         return;
@@ -234,6 +236,10 @@ Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
     memset(&g_ctx, 0, sizeof(g_ctx));
     g_ctx.tun_fd = tun_fd;
     g_ctx.mtu = mtu;
+    int sb = sample_bytes;
+    if (sb < 16) sb = 16;                 // always enough to classify
+    if (sb > L7_SNAP_MAX) sb = L7_SNAP_MAX;
+    g_ctx.sample_bytes = sb;
     g_ctx.running = 1;
     if (pipe(g_ctx.stop_pipe) != 0) {
         LOGE("pipe() failed");
