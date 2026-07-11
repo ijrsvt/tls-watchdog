@@ -16,8 +16,8 @@ set -euo pipefail
 # --- locate adb ---------------------------------------------------------------
 ADB="$(command -v adb || true)"
 if [[ -z "$ADB" ]]; then
-    for c in "$HOME/Android/Sdk/platform-tools/adb" "$ANDROID_HOME/platform-tools/adb" \
-             "$ANDROID_SDK_ROOT/platform-tools/adb"; do
+    for c in "$HOME/Android/Sdk/platform-tools/adb" "${ANDROID_HOME:-}/platform-tools/adb" \
+             "${ANDROID_SDK_ROOT:-}/platform-tools/adb"; do
         [[ -x "$c" ]] && ADB="$c" && break
     done
 fi
