@@ -39,10 +39,24 @@ Requires JDK 17 + Android SDK (platform 35, build-tools 35, NDK r27, CMake 3.22.
 
 ## Install & run
 
+**On a phone (USB):**
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**On a Chromebook (locally, into ChromeOS's Android/ARCVM):** the debug build includes an
+`x86_64` native lib for this. One-time: enable ADB in
+`Settings → About ChromeOS → Developers → "Develop Android apps" → Enable ADB debugging`
+(requires a reboot). Then:
+```bash
+./install.sh                     # connects to ARCVM (100.115.92.2:5555) + installs
+./install.sh <ip:port>           # if your ARCVM adb address differs
+```
+Accept the "Allow USB debugging?" dialog on the Chromebook the first time.
+Note: only *Android* apps' traffic is seen — not the ChromeOS browser or Linux/Crostini apps.
+Managed/enterprise Chromebooks may block ADB by policy.
+
+Then, on either platform:
 1. Open the app → **Apps** tab → tick the app(s) to audit (e.g. your bank).
 2. **Monitor** tab → **Start monitoring** → accept the system VPN consent dialog.
 3. Use the audited apps; watch verdicts appear in the **Flows** tab.
