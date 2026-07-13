@@ -14,7 +14,7 @@ object NativeBridge {
      * [callbacks] receives socket-protect requests and per-flow reports,
      * invoked on the native capture thread.
      */
-    external fun nativeStartCapture(tunFd: Int, mtu: Int, sampleBytes: Int, callbacks: VpnCallbacks)
+    external fun nativeStartCapture(tunFd: Int, mtu: Int, recordCap: Int, callbacks: VpnCallbacks)
 
     /** Stop the capture loop, join the thread and close the TUN fd. */
     external fun nativeStopCapture()
@@ -41,12 +41,18 @@ interface VpnCallbacks {
         firstBytes: ByteArray,
     )
 
-    /** Final stats for a previously reported flow, emitted when the connection closes. */
+    /**
+     * Final stats for a previously reported flow, emitted when the connection closes.
+     * [reqSample]/[respSample] hold up to the recording cap of the client->server and
+     * server->client payloads (empty unless recording was enabled).
+     */
     fun onFlowClose(
         flowId: Long,
         bytesOut: Long,
         bytesIn: Long,
         packets: Int,
         durationMs: Long,
+        reqSample: ByteArray,
+        respSample: ByteArray,
     )
 }

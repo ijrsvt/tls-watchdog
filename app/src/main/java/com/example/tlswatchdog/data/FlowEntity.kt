@@ -17,8 +17,10 @@ data class FlowEntity(
     val verdict: String,
     val isOffender: Boolean,
     val firstBytesHex: String,
-    /** Decoded printable preview of the cleartext payload; null unless recording was on. */
+    /** Decoded printable preview of the cleartext request; null unless recording was on. */
     val sampleText: String? = null,
+    /** Decoded printable preview of the cleartext response; null unless recording was on. */
+    val responseText: String? = null,
     // Lifetime stats, filled in when the connection closes.
     val bytesOut: Long = 0,
     val bytesIn: Long = 0,

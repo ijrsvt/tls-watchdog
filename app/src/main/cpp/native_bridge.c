@@ -28,7 +28,8 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define READ_BUF_SIZE 65536
-#define L7_SNAP_MAX   4096   // upper bound on the per-flow payload sample
+#define CLASSIFY_SNAP 64      // bytes handed to onFlow for TLS/cleartext classification
+#define RECORD_CAP_MAX 65536  // hard ceiling on per-direction payload recording
 #define PURGE_INTERVAL_SEC 5
 
 static JavaVM *g_vm = NULL;
@@ -37,7 +38,7 @@ typedef struct {
     int tun_fd;
     int stop_pipe[2];
     int mtu;
-    int sample_bytes;       // how many bytes of the first payload to capture
+    int record_cap;         // max payload bytes to accumulate per direction (0 = off)
     volatile int running;
     pthread_t thread;
     uint64_t flow_counter;  // assigns a unique id to each connection
@@ -46,7 +47,7 @@ typedef struct {
     jobject callbacks;      // global ref to VpnCallbacks
     jmethodID mid_protect;    // boolean protectSocket(int fd)
     jmethodID mid_on_flow;    // void onFlow(long,int,int,byte[],int,byte[],int,byte[])
-    jmethodID mid_on_flow_close; // void onFlowClose(long,long,long,int,long)
+    jmethodID mid_on_flow_close; // void onFlowClose(long,long,long,int,long,byte[],byte[])
 } capture_ctx;
 
 // Per-connection accounting, hung off the zdtun connection's userdata.
@@ -58,10 +59,27 @@ typedef struct {
     uint32_t pkts_out;
     uint32_t pkts_in;
     time_t start;
+    char *req_buf;          // accumulated client->server payload (up to record_cap)
+    int req_len;
+    char *resp_buf;         // accumulated server->client payload (up to record_cap)
+    int resp_len;
 } conn_state;
 
 // Single active capture session (only one VpnService can run at a time).
 static capture_ctx g_ctx;
+
+// Append up to `cap` total bytes into a lazily-allocated buffer.
+static void append_sample(char **buf, int *len, int cap, const char *data, int datalen) {
+    if (cap <= 0 || *len >= cap || datalen <= 0) return;
+    if (!*buf) {
+        *buf = malloc(cap);
+        if (!*buf) return;
+    }
+    int space = cap - *len;
+    int n = datalen < space ? datalen : space;
+    memcpy(*buf + *len, data, n);
+    *len += n;
+}
 
 /* ------------------------------------------------------------------ */
 /* zdtun callbacks                                                    */
@@ -74,6 +92,8 @@ static int cb_send_client(zdtun_t *tun, zdtun_pkt_t *pkt, const zdtun_conn_t *co
     if (cs) {
         cs->bytes_in += pkt->len;
         cs->pkts_in++;
+        if (pkt->l7_len > 0)
+            append_sample(&cs->resp_buf, &cs->resp_len, c->record_cap, pkt->l7, pkt->l7_len);
     }
     ssize_t n = write(c->tun_fd, pkt->buf, pkt->len);
     if (n != pkt->len) {
@@ -101,14 +121,25 @@ static void cb_on_connection_close(zdtun_t *tun, const zdtun_conn_t *conn) {
     conn_state *cs = (conn_state *) zdtun_conn_get_userdata(conn);
     if (!cs) return;
     if (cs->reported && c->env && c->callbacks) {
+        JNIEnv *env = c->env;
         jlong duration_ms = (jlong) (time(NULL) - cs->start) * 1000;
-        (*c->env)->CallVoidMethod(c->env, c->callbacks, c->mid_on_flow_close,
-                                  (jlong) cs->id,
-                                  (jlong) cs->bytes_out,
-                                  (jlong) cs->bytes_in,
-                                  (jint) (cs->pkts_out + cs->pkts_in),
-                                  duration_ms);
+        jbyteArray req = (*env)->NewByteArray(env, cs->req_len);
+        if (cs->req_len > 0)
+            (*env)->SetByteArrayRegion(env, req, 0, cs->req_len, (const jbyte *) cs->req_buf);
+        jbyteArray resp = (*env)->NewByteArray(env, cs->resp_len);
+        if (cs->resp_len > 0)
+            (*env)->SetByteArrayRegion(env, resp, 0, cs->resp_len, (const jbyte *) cs->resp_buf);
+        (*env)->CallVoidMethod(env, c->callbacks, c->mid_on_flow_close,
+                               (jlong) cs->id,
+                               (jlong) cs->bytes_out,
+                               (jlong) cs->bytes_in,
+                               (jint) (cs->pkts_out + cs->pkts_in),
+                               duration_ms, req, resp);
+        (*env)->DeleteLocalRef(env, req);
+        (*env)->DeleteLocalRef(env, resp);
     }
+    free(cs->req_buf);
+    free(cs->resp_buf);
     free(cs);
 }
 
@@ -207,20 +238,19 @@ static void capture_loop(capture_ctx *c) {
         if (FD_ISSET(c->tun_fd, &rd)) {
             ssize_t n = read(c->tun_fd, buf, READ_BUF_SIZE);
             if (n > 0) {
-                // Snapshot the first client->server payload BEFORE forwarding,
-                // because zdtun may rewrite the buffer in place.
+                // Snapshot this packet's payload BEFORE forwarding, because zdtun
+                // may rewrite the buffer in place. A single segment fits in 2 KB.
                 zdtun_pkt_t pinfo;
                 int parsed = zdtun_parse_pkt(tun, buf, (uint16_t) n, &pinfo);
                 int is_tcp_data = (parsed == 0 &&
                                    pinfo.tuple.ipproto == IPPROTO_TCP &&
                                    pinfo.l7_len > 0);
-                uint8_t snap[L7_SNAP_MAX];
-                int snaplen = 0;
+                uint8_t seg[2048];
+                int seglen = 0;
                 zdtun_5tuple_t tuple;
                 if (is_tcp_data) {
-                    int cap = c->sample_bytes;
-                    snaplen = pinfo.l7_len < cap ? pinfo.l7_len : cap;
-                    memcpy(snap, pinfo.l7, snaplen);
+                    seglen = pinfo.l7_len < (int) sizeof(seg) ? pinfo.l7_len : (int) sizeof(seg);
+                    memcpy(seg, pinfo.l7, seglen);
                     tuple = pinfo.tuple;  // struct copy, survives forwarding
                 }
 
@@ -232,10 +262,15 @@ static void capture_loop(capture_ctx *c) {
                         // Count every outbound (client->server) packet.
                         cs->bytes_out += (uint64_t) n;
                         cs->pkts_out++;
-                        // Report the first data segment of each TCP flow exactly once.
-                        if (is_tcp_data && !cs->reported) {
-                            cs->reported = 1;
-                            report_flow(c, cs->id, &tuple, snap, snaplen);
+                        if (is_tcp_data) {
+                            append_sample(&cs->req_buf, &cs->req_len, c->record_cap,
+                                          (const char *) seg, seglen);
+                            // Report the first data segment of each flow exactly once.
+                            if (!cs->reported) {
+                                cs->reported = 1;
+                                int clen = seglen < CLASSIFY_SNAP ? seglen : CLASSIFY_SNAP;
+                                report_flow(c, cs->id, &tuple, seg, clen);
+                            }
                         }
                     }
                 }
@@ -286,7 +321,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
 JNIEXPORT void JNICALL
 Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
-        JNIEnv *env, jobject thiz, jint tun_fd, jint mtu, jint sample_bytes, jobject callbacks) {
+        JNIEnv *env, jobject thiz, jint tun_fd, jint mtu, jint record_cap, jobject callbacks) {
     if (g_ctx.running) {
         LOGE("capture already running");
         return;
@@ -294,10 +329,10 @@ Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
     memset(&g_ctx, 0, sizeof(g_ctx));
     g_ctx.tun_fd = tun_fd;
     g_ctx.mtu = mtu;
-    int sb = sample_bytes;
-    if (sb < 16) sb = 16;                 // always enough to classify
-    if (sb > L7_SNAP_MAX) sb = L7_SNAP_MAX;
-    g_ctx.sample_bytes = sb;
+    int rc = record_cap;
+    if (rc < 0) rc = 0;
+    if (rc > RECORD_CAP_MAX) rc = RECORD_CAP_MAX;
+    g_ctx.record_cap = rc;
     g_ctx.running = 1;
     if (pipe(g_ctx.stop_pipe) != 0) {
         LOGE("pipe() failed");
@@ -309,7 +344,7 @@ Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
     jclass cls = (*env)->GetObjectClass(env, callbacks);
     g_ctx.mid_protect = (*env)->GetMethodID(env, cls, "protectSocket", "(I)Z");
     g_ctx.mid_on_flow = (*env)->GetMethodID(env, cls, "onFlow", "(JII[BI[BI[B)V");
-    g_ctx.mid_on_flow_close = (*env)->GetMethodID(env, cls, "onFlowClose", "(JJJIJ)V");
+    g_ctx.mid_on_flow_close = (*env)->GetMethodID(env, cls, "onFlowClose", "(JJJIJ[B[B)V");
     if (!g_ctx.mid_protect || !g_ctx.mid_on_flow || !g_ctx.mid_on_flow_close) {
         LOGE("failed to resolve callback methods");
         g_ctx.running = 0;

@@ -141,7 +141,8 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
             Text("  Record cleartext content", fontWeight = FontWeight.Medium)
         }
         Text(
-            "Captures ~2 KB of each non-TLS flow (URLs, headers, maybe secrets). Stored locally.",
+            "Captures up to ~16 KB of each non-TLS flow's request and response " +
+                "(URLs, headers, bodies, maybe secrets). Stored locally.",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.outline,
         )
@@ -243,7 +244,7 @@ private fun humanDuration(ms: Long): String = when {
 private fun FlowRow(f: FlowEntity) {
     val color = if (f.isOffender) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
     var expanded by remember { mutableStateOf(false) }
-    val hasSample = !f.sampleText.isNullOrBlank()
+    val hasSample = !f.sampleText.isNullOrBlank() || !f.responseText.isNullOrBlank()
     Column(
         Modifier
             .fillMaxWidth()
@@ -273,16 +274,42 @@ private fun FlowRow(f: FlowEntity) {
             color = MaterialTheme.colorScheme.outline,
         )
         if (hasSample) {
-            val text = f.sampleText!!
-            Text(
-                if (expanded) text else text.lineSequence().first().take(80),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                maxLines = if (expanded) Int.MAX_VALUE else 1,
-                color = color,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            if (expanded) {
+                f.sampleText?.takeIf { it.isNotBlank() }?.let { PayloadBlock("REQUEST ▲", it, color) }
+                f.responseText?.takeIf { it.isNotBlank() }?.let {
+                    PayloadBlock("RESPONSE ▼", it, MaterialTheme.colorScheme.onSurface)
+                }
+            } else {
+                val preview = (f.sampleText ?: f.responseText ?: "")
+                    .lineSequence().firstOrNull().orEmpty().take(80)
+                Text(
+                    preview,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    color = color,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
     }
     HorizontalDivider()
+}
+
+@Composable
+private fun PayloadBlock(title: String, body: String, bodyColor: androidx.compose.ui.graphics.Color) {
+    Text(
+        title,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.outline,
+        modifier = Modifier.padding(top = 6.dp),
+    )
+    Text(
+        body,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        color = bodyColor,
+        modifier = Modifier.padding(top = 2.dp),
+    )
 }

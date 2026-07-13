@@ -31,8 +31,16 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
 
     // Correlate native flow ids with DB row ids. onFlow (insert) and onFlowClose
     // (stats) race, so guard the maps and stash stats that arrive before the row.
-    private data class FlowStats(val bytesOut: Long, val bytesIn: Long, val packets: Int, val durationMs: Long)
+    private data class FlowStats(
+        val bytesOut: Long,
+        val bytesIn: Long,
+        val packets: Int,
+        val durationMs: Long,
+        val reqText: String?,
+        val respText: String?,
+    )
     private val flowIdToRow = HashMap<Long, Long>()
+    private val flowOffender = HashMap<Long, Boolean>()
     private val pendingStats = HashMap<Long, FlowStats>()
     private val bookkeeping = kotlinx.coroutines.sync.Mutex()
 
@@ -100,9 +108,9 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
 
-        val sampleBytes = if (recordCleartext) RECORD_SAMPLE_BYTES else CLASSIFY_SAMPLE_BYTES
+        val recordCap = if (recordCleartext) RECORD_CAP_BYTES else 0
         val fd = pfd.detachFd()
-        NativeBridge.nativeStartCapture(fd, MTU, sampleBytes, this)
+        NativeBridge.nativeStartCapture(fd, MTU, recordCap, this)
         running = true
         VpnController.setRunning(true)
         Log.i(TAG, "VPN started, monitoring $added apps")
@@ -150,7 +158,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             val verdict = FlowClassifier.classify(proto, firstBytes)
             val uid = attribution.uidFor(proto, srcIp, srcPort, dstIp, dstPort)
             val (pkg, label) = attribution.appFor(uid)
-            val sample = if (recordCleartext && verdict.isOffender) firstBytes.toPreview() else null
+            // Payload samples are filled in at close (accumulated across packets).
             val rowId = repo.insert(
                 FlowEntity(
                     timestamp = System.currentTimeMillis(),
@@ -164,14 +172,19 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     verdict = verdict.name,
                     isOffender = verdict.isOffender,
                     firstBytesHex = firstBytes.toHex(),
-                    sampleText = sample,
                 ),
             )
             bookkeeping.withLock {
                 flowIdToRow[flowId] = rowId
+                flowOffender[flowId] = verdict.isOffender
                 pendingStats.remove(flowId)?.let { s ->
-                    repo.updateStats(rowId, s.bytesOut, s.bytesIn, s.packets, s.durationMs)
+                    val keep = verdict.isOffender
+                    repo.updateStats(
+                        rowId, s.bytesOut, s.bytesIn, s.packets, s.durationMs,
+                        if (keep) s.reqText else null, if (keep) s.respText else null,
+                    )
                     flowIdToRow.remove(flowId)
+                    flowOffender.remove(flowId)
                 }
             }
             if (verdict.isOffender) {
@@ -190,15 +203,23 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         bytesIn: Long,
         packets: Int,
         durationMs: Long,
+        reqSample: ByteArray,
+        respSample: ByteArray,
     ) {
         scope.launch {
+            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview() else null
+            val respText = if (respSample.isNotEmpty()) respSample.toPreview() else null
             bookkeeping.withLock {
                 val rowId = flowIdToRow.remove(flowId)
                 if (rowId != null) {
-                    repo.updateStats(rowId, bytesOut, bytesIn, packets, durationMs)
+                    val keep = flowOffender.remove(flowId) ?: false
+                    repo.updateStats(
+                        rowId, bytesOut, bytesIn, packets, durationMs,
+                        if (keep) reqText else null, if (keep) respText else null,
+                    )
                 } else {
                     // Stats arrived before the row insert finished; apply on insert.
-                    pendingStats[flowId] = FlowStats(bytesOut, bytesIn, packets, durationMs)
+                    pendingStats[flowId] = FlowStats(bytesOut, bytesIn, packets, durationMs, reqText, respText)
                 }
             }
         }
@@ -219,8 +240,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     companion object {
         private const val TAG = "TlsWatchdogVpn"
         const val MTU = 1500
-        const val CLASSIFY_SAMPLE_BYTES = 64     // just enough to classify
-        const val RECORD_SAMPLE_BYTES = 2048     // capture request line + headers
+        const val RECORD_CAP_BYTES = 16384       // max payload captured per direction when recording
         const val ACTION_START = "com.example.tlswatchdog.START"
         const val ACTION_STOP = "com.example.tlswatchdog.STOP"
     }

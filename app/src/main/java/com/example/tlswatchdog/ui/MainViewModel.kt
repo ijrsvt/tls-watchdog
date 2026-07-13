@@ -83,7 +83,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val sb = StringBuilder()
         sb.append(
             "time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender," +
-                "bytes_out,bytes_in,packets,duration_ms,first_bytes_hex,sample_text\n",
+                "bytes_out,bytes_in,packets,duration_ms,first_bytes_hex,request_text,response_text\n",
         )
         for (r in rows) {
             sb.append(fmt.format(Date(r.timestamp))).append(',')
@@ -101,7 +101,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .append(r.packets).append(',')
                 .append(r.durationMs).append(',')
                 .append(r.firstBytesHex).append(',')
-                .append(csv(r.sampleText)).append('\n')
+                .append(csv(r.sampleText)).append(',')
+                .append(csv(r.responseText)).append('\n')
         }
         getApplication<Application>().contentResolver.openOutputStream(uri)?.use {
             it.write(sb.toString().toByteArray())
