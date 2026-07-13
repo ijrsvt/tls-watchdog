@@ -10,6 +10,12 @@ interface FlowDao {
     @Insert
     suspend fun insert(flow: FlowEntity): Long
 
+    @Query(
+        "UPDATE flows SET bytesOut = :bytesOut, bytesIn = :bytesIn, " +
+            "packets = :packets, durationMs = :durationMs WHERE id = :id",
+    )
+    suspend fun updateStats(id: Long, bytesOut: Long, bytesIn: Long, packets: Int, durationMs: Long)
+
     @Query("SELECT * FROM flows ORDER BY timestamp DESC LIMIT 2000")
     fun observeAll(): Flow<List<FlowEntity>>
 

@@ -40,12 +40,25 @@ typedef struct {
     int sample_bytes;       // how many bytes of the first payload to capture
     volatile int running;
     pthread_t thread;
+    uint64_t flow_counter;  // assigns a unique id to each connection
 
     JNIEnv *env;            // valid only on the capture thread
     jobject callbacks;      // global ref to VpnCallbacks
-    jmethodID mid_protect;  // boolean protectSocket(int fd)
-    jmethodID mid_on_flow;  // void onFlow(int,int,byte[],int,byte[],int,byte[])
+    jmethodID mid_protect;    // boolean protectSocket(int fd)
+    jmethodID mid_on_flow;    // void onFlow(long,int,int,byte[],int,byte[],int,byte[])
+    jmethodID mid_on_flow_close; // void onFlowClose(long,long,long,int,long)
 } capture_ctx;
+
+// Per-connection accounting, hung off the zdtun connection's userdata.
+typedef struct {
+    uint64_t id;
+    int reported;           // first client->server payload already reported
+    uint64_t bytes_out;     // client -> server (IP bytes)
+    uint64_t bytes_in;      // server -> client (IP bytes)
+    uint32_t pkts_out;
+    uint32_t pkts_in;
+    time_t start;
+} conn_state;
 
 // Single active capture session (only one VpnService can run at a time).
 static capture_ctx g_ctx;
@@ -57,12 +70,46 @@ static capture_ctx g_ctx;
 // Send a reply packet from the network back to the apps: write it to the TUN.
 static int cb_send_client(zdtun_t *tun, zdtun_pkt_t *pkt, const zdtun_conn_t *conn) {
     capture_ctx *c = (capture_ctx *) zdtun_userdata(tun);
+    conn_state *cs = (conn_state *) zdtun_conn_get_userdata(conn);
+    if (cs) {
+        cs->bytes_in += pkt->len;
+        cs->pkts_in++;
+    }
     ssize_t n = write(c->tun_fd, pkt->buf, pkt->len);
     if (n != pkt->len) {
         LOGE("tun write failed: %zd/%d (errno=%d)", n, pkt->len, errno);
         return -1;
     }
     return 0;
+}
+
+// New connection: attach per-flow accounting state.
+static int cb_on_connection_open(zdtun_t *tun, zdtun_conn_t *conn) {
+    capture_ctx *c = (capture_ctx *) zdtun_userdata(tun);
+    conn_state *cs = calloc(1, sizeof(conn_state));
+    if (cs) {
+        cs->id = ++c->flow_counter;
+        cs->start = time(NULL);
+        zdtun_conn_set_userdata(conn, cs);
+    }
+    return 0; // allow the connection
+}
+
+// Connection closed: emit final stats and free the per-flow state.
+static void cb_on_connection_close(zdtun_t *tun, const zdtun_conn_t *conn) {
+    capture_ctx *c = (capture_ctx *) zdtun_userdata(tun);
+    conn_state *cs = (conn_state *) zdtun_conn_get_userdata(conn);
+    if (!cs) return;
+    if (cs->reported && c->env && c->callbacks) {
+        jlong duration_ms = (jlong) (time(NULL) - cs->start) * 1000;
+        (*c->env)->CallVoidMethod(c->env, c->callbacks, c->mid_on_flow_close,
+                                  (jlong) cs->id,
+                                  (jlong) cs->bytes_out,
+                                  (jlong) cs->bytes_in,
+                                  (jint) (cs->pkts_out + cs->pkts_in),
+                                  duration_ms);
+    }
+    free(cs);
 }
 
 // Every outbound socket must be protect()ed or it would route back into us.
@@ -93,7 +140,7 @@ static jbyteArray ip_to_bytes(JNIEnv *env, const zdtun_5tuple_t *t, int is_src) 
     }
 }
 
-static void report_flow(capture_ctx *c, const zdtun_5tuple_t *t,
+static void report_flow(capture_ctx *c, uint64_t flow_id, const zdtun_5tuple_t *t,
                         const uint8_t *l7, int l7len) {
     JNIEnv *env = c->env;
     jbyteArray src = ip_to_bytes(env, t, 1);
@@ -102,6 +149,7 @@ static void report_flow(capture_ctx *c, const zdtun_5tuple_t *t,
     (*env)->SetByteArrayRegion(env, first, 0, l7len, (const jbyte *) l7);
 
     (*env)->CallVoidMethod(env, c->callbacks, c->mid_on_flow,
+                           (jlong) flow_id,
                            (jint) t->ipver,
                            (jint) t->ipproto,
                            src, (jint) ntohs(t->src_port),
@@ -121,6 +169,8 @@ static void capture_loop(capture_ctx *c) {
     zdtun_callbacks_t callbacks = {
             .send_client = cb_send_client,
             .on_socket_open = cb_on_socket_open,
+            .on_connection_open = cb_on_connection_open,
+            .on_connection_close = cb_on_connection_close,
     };
     zdtun_t *tun = zdtun_init(&callbacks, c);
     if (!tun) {
@@ -176,10 +226,18 @@ static void capture_loop(capture_ctx *c) {
 
                 zdtun_conn_t *conn = zdtun_easy_forward(tun, buf, (int) n);
 
-                // Report the first data segment of each TCP flow exactly once.
-                if (conn && is_tcp_data && zdtun_conn_get_userdata(conn) == NULL) {
-                    zdtun_conn_set_userdata(conn, (void *) 1);
-                    report_flow(c, &tuple, snap, snaplen);
+                if (conn) {
+                    conn_state *cs = (conn_state *) zdtun_conn_get_userdata(conn);
+                    if (cs) {
+                        // Count every outbound (client->server) packet.
+                        cs->bytes_out += (uint64_t) n;
+                        cs->pkts_out++;
+                        // Report the first data segment of each TCP flow exactly once.
+                        if (is_tcp_data && !cs->reported) {
+                            cs->reported = 1;
+                            report_flow(c, cs->id, &tuple, snap, snaplen);
+                        }
+                    }
                 }
             }
         }
@@ -250,8 +308,9 @@ Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
     g_ctx.callbacks = (*env)->NewGlobalRef(env, callbacks);
     jclass cls = (*env)->GetObjectClass(env, callbacks);
     g_ctx.mid_protect = (*env)->GetMethodID(env, cls, "protectSocket", "(I)Z");
-    g_ctx.mid_on_flow = (*env)->GetMethodID(env, cls, "onFlow", "(II[BI[BI[B)V");
-    if (!g_ctx.mid_protect || !g_ctx.mid_on_flow) {
+    g_ctx.mid_on_flow = (*env)->GetMethodID(env, cls, "onFlow", "(JII[BI[BI[B)V");
+    g_ctx.mid_on_flow_close = (*env)->GetMethodID(env, cls, "onFlowClose", "(JJJIJ)V");
+    if (!g_ctx.mid_protect || !g_ctx.mid_on_flow || !g_ctx.mid_on_flow_close) {
         LOGE("failed to resolve callback methods");
         g_ctx.running = 0;
         return;

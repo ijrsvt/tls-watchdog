@@ -226,6 +226,19 @@ private fun FlowsTab(vm: MainViewModel) {
 
 private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
+private fun humanBytes(b: Long): String = when {
+    b < 1024 -> "${b}B"
+    b < 1024 * 1024 -> "%.1fKB".format(b / 1024.0)
+    b < 1024 * 1024 * 1024 -> "%.1fMB".format(b / (1024.0 * 1024))
+    else -> "%.1fGB".format(b / (1024.0 * 1024 * 1024))
+}
+
+private fun humanDuration(ms: Long): String = when {
+    ms < 1000 -> "${ms}ms"
+    ms < 60_000 -> "%.1fs".format(ms / 1000.0)
+    else -> "${ms / 60_000}m${(ms % 60_000) / 1000}s"
+}
+
 @Composable
 private fun FlowRow(f: FlowEntity) {
     val color = if (f.isOffender) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
@@ -244,6 +257,17 @@ private fun FlowRow(f: FlowEntity) {
         Text(
             "${f.dstIp}:${f.dstPort}  ·  ${timeFmt.format(Date(f.timestamp))}" +
                 if (hasSample) "  ·  tap to ${if (expanded) "hide" else "view"} payload" else "",
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        val stats = if (f.packets > 0) {
+            "↑${humanBytes(f.bytesOut)} ↓${humanBytes(f.bytesIn)} · ${f.packets} pkts · ${humanDuration(f.durationMs)}"
+        } else {
+            "active…"
+        }
+        Text(
+            stats,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.outline,

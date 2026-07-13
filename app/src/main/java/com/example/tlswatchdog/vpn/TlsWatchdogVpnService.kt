@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import java.net.InetAddress
 
 class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
@@ -27,6 +28,13 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private lateinit var attribution: Attribution
     private var running = false
     private var recordCleartext = false
+
+    // Correlate native flow ids with DB row ids. onFlow (insert) and onFlowClose
+    // (stats) race, so guard the maps and stash stats that arrive before the row.
+    private data class FlowStats(val bytesOut: Long, val bytesIn: Long, val packets: Int, val durationMs: Long)
+    private val flowIdToRow = HashMap<Long, Long>()
+    private val pendingStats = HashMap<Long, FlowStats>()
+    private val bookkeeping = kotlinx.coroutines.sync.Mutex()
 
     override fun onCreate() {
         super.onCreate()
@@ -124,6 +132,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     override fun protectSocket(fd: Int): Boolean = protect(fd)
 
     override fun onFlow(
+        flowId: Long,
         ipver: Int,
         proto: Int,
         srcIp: ByteArray,
@@ -142,7 +151,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             val uid = attribution.uidFor(proto, srcIp, srcPort, dstIp, dstPort)
             val (pkg, label) = attribution.appFor(uid)
             val sample = if (recordCleartext && verdict.isOffender) firstBytes.toPreview() else null
-            repo.insert(
+            val rowId = repo.insert(
                 FlowEntity(
                     timestamp = System.currentTimeMillis(),
                     uid = uid,
@@ -158,12 +167,39 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     sampleText = sample,
                 ),
             )
+            bookkeeping.withLock {
+                flowIdToRow[flowId] = rowId
+                pendingStats.remove(flowId)?.let { s ->
+                    repo.updateStats(rowId, s.bytesOut, s.bytesIn, s.packets, s.durationMs)
+                    flowIdToRow.remove(flowId)
+                }
+            }
             if (verdict.isOffender) {
                 Notifications.cleartextAlert(
                     this@TlsWatchdogVpnService,
                     label ?: pkg,
                     "$dstAddr:$dstPort",
                 )
+            }
+        }
+    }
+
+    override fun onFlowClose(
+        flowId: Long,
+        bytesOut: Long,
+        bytesIn: Long,
+        packets: Int,
+        durationMs: Long,
+    ) {
+        scope.launch {
+            bookkeeping.withLock {
+                val rowId = flowIdToRow.remove(flowId)
+                if (rowId != null) {
+                    repo.updateStats(rowId, bytesOut, bytesIn, packets, durationMs)
+                } else {
+                    // Stats arrived before the row insert finished; apply on insert.
+                    pendingStats[flowId] = FlowStats(bytesOut, bytesIn, packets, durationMs)
+                }
             }
         }
     }

@@ -19,4 +19,9 @@ data class FlowEntity(
     val firstBytesHex: String,
     /** Decoded printable preview of the cleartext payload; null unless recording was on. */
     val sampleText: String? = null,
+    // Lifetime stats, filled in when the connection closes.
+    val bytesOut: Long = 0,
+    val bytesIn: Long = 0,
+    val packets: Int = 0,
+    val durationMs: Long = 0,
 )

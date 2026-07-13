@@ -26,10 +26,12 @@ interface VpnCallbacks {
     fun protectSocket(fd: Int): Boolean
 
     /**
-     * First client->server payload of a new flow.
+     * First client->server payload of a new flow. [flowId] uniquely identifies the
+     * connection for this capture session and is echoed by [onFlowClose].
      * IPs are raw network-order address bytes (4 for IPv4, 16 for IPv6).
      */
     fun onFlow(
+        flowId: Long,
         ipver: Int,
         proto: Int,
         srcIp: ByteArray,
@@ -37,5 +39,14 @@ interface VpnCallbacks {
         dstIp: ByteArray,
         dstPort: Int,
         firstBytes: ByteArray,
+    )
+
+    /** Final stats for a previously reported flow, emitted when the connection closes. */
+    fun onFlowClose(
+        flowId: Long,
+        bytesOut: Long,
+        bytesIn: Long,
+        packets: Int,
+        durationMs: Long,
     )
 }

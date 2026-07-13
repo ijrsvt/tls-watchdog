@@ -81,7 +81,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val rows = repo.snapshot()
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         val sb = StringBuilder()
-        sb.append("time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender,first_bytes_hex,sample_text\n")
+        sb.append(
+            "time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender," +
+                "bytes_out,bytes_in,packets,duration_ms,first_bytes_hex,sample_text\n",
+        )
         for (r in rows) {
             sb.append(fmt.format(Date(r.timestamp))).append(',')
                 .append(csv(r.appLabel)).append(',')
@@ -93,6 +96,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .append(r.proto).append(',')
                 .append(r.verdict).append(',')
                 .append(r.isOffender).append(',')
+                .append(r.bytesOut).append(',')
+                .append(r.bytesIn).append(',')
+                .append(r.packets).append(',')
+                .append(r.durationMs).append(',')
                 .append(r.firstBytesHex).append(',')
                 .append(csv(r.sampleText)).append('\n')
         }
