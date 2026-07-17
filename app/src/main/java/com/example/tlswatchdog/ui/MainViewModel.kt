@@ -1,8 +1,13 @@
 package com.example.tlswatchdog.ui
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.tlswatchdog.data.AppSelection
@@ -20,7 +25,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class AppItem(val packageName: String, val label: String)
+data class AppItem(val packageName: String, val label: String, val icon: ImageBitmap?)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = FlowRepository(app)
@@ -32,6 +37,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val recordCleartext: StateFlow<Boolean> =
         AppSelection.observeRecord(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val cap: StateFlow<Int> =
+        AppSelection.observeCap(app).stateIn(viewModelScope, SharingStarted.Eagerly, AppSelection.DEFAULT_CAP)
+    val flagUdp: StateFlow<Boolean> =
+        AppSelection.observeFlagUdp(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val autoStart: StateFlow<Boolean> =
+        AppSelection.observeAutoStart(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setCap(bytes: Int) = viewModelScope.launch { AppSelection.setCap(getApplication(), bytes) }
+    fun setFlagUdp(enabled: Boolean) = viewModelScope.launch { AppSelection.setFlagUdp(getApplication(), enabled) }
+    fun setAutoStart(enabled: Boolean) = viewModelScope.launch { AppSelection.setAutoStart(getApplication(), enabled) }
 
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
     val apps: StateFlow<List<AppItem>> = _apps
@@ -47,19 +62,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadApps() = viewModelScope.launch(Dispatchers.IO) {
         val pm = getApplication<Application>().packageManager
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val resolved = pm.queryIntentActivities(intent, 0)
-        val items = resolved
-            .map { it.activityInfo.packageName }
-            .distinct()
-            .filter { it != getApplication<Application>().packageName }
-            .map { pkg ->
-                val label = try {
-                    pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        val self = getApplication<Application>().packageName
+        val launchable = pm.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0,
+        ).map { it.activityInfo.packageName }
+        val internet = try {
+            pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
+                .filter { it.requestedPermissions?.contains(Manifest.permission.INTERNET) == true }
+                .map { it.packageName }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val items = (launchable + internet).distinct()
+            .filter { it != self }
+            .mapNotNull { pkg ->
+                try {
+                    val ai = pm.getApplicationInfo(pkg, 0)
+                    val label = pm.getApplicationLabel(ai).toString()
+                    val icon = try {
+                        pm.getApplicationIcon(ai).toBitmap(96, 96).asImageBitmap()
+                    } catch (e: Exception) {
+                        null
+                    }
+                    AppItem(pkg, label, icon)
                 } catch (e: Exception) {
-                    pkg
+                    null
                 }
-                AppItem(pkg, label)
             }
             .sortedBy { it.label.lowercase() }
         _apps.value = items
