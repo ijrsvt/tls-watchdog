@@ -28,6 +28,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private lateinit var attribution: Attribution
     private var running = false
     private var recordCleartext = false
+    private var flagUdp = false
+    private var recordCap = 0
 
     // Correlate native flow ids with DB row ids. onFlow (insert) and onFlowClose
     // (stats) race, so guard the maps and stash stats that arrive before the row.
@@ -41,7 +43,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     )
     private val flowIdToRow = HashMap<Long, Long>()
     private val flowOffender = HashMap<Long, Boolean>()
-    private val pendingStats = HashMap<Long, FlowStats>()
+    private val pendingClose = HashMap<Long, FlowStats>()
     private val bookkeeping = kotlinx.coroutines.sync.Mutex()
 
     override fun onCreate() {
@@ -66,6 +68,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         if (running) return
         val selected = runBlocking { AppSelection.get(this@TlsWatchdogVpnService) }
         recordCleartext = runBlocking { AppSelection.getRecord(this@TlsWatchdogVpnService) }
+        flagUdp = runBlocking { AppSelection.getFlagUdp(this@TlsWatchdogVpnService) }
+        recordCap = if (recordCleartext) runBlocking { AppSelection.getCap(this@TlsWatchdogVpnService) } else 0
         if (selected.isEmpty()) {
             Log.w(TAG, "no apps selected; not starting")
             stopSelf()
@@ -108,7 +112,6 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
 
-        val recordCap = if (recordCleartext) RECORD_CAP_BYTES else 0
         val fd = pfd.detachFd()
         NativeBridge.nativeStartCapture(fd, MTU, recordCap, this)
         running = true
@@ -155,10 +158,12 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             "?"
         }
         scope.launch {
-            val verdict = FlowClassifier.classify(proto, firstBytes)
+            val verdict = FlowClassifier.classify(proto, dstPort, firstBytes)
+            val host = FlowClassifier.extractHost(proto, firstBytes)
+            val offender = verdict.isOffender(flagUdp)
             val uid = attribution.uidFor(proto, srcIp, srcPort, dstIp, dstPort)
             val (pkg, label) = attribution.appFor(uid)
-            // Payload samples are filled in at close (accumulated across packets).
+            // Payload samples are filled in by live updates / close.
             val rowId = repo.insert(
                 FlowEntity(
                     timestamp = System.currentTimeMillis(),
@@ -168,30 +173,53 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     srcPort = srcPort,
                     dstIp = dstAddr,
                     dstPort = dstPort,
+                    host = host,
                     proto = proto,
                     verdict = verdict.name,
-                    isOffender = verdict.isOffender,
+                    isOffender = offender,
                     firstBytesHex = firstBytes.toHex(),
                 ),
             )
             bookkeeping.withLock {
                 flowIdToRow[flowId] = rowId
-                flowOffender[flowId] = verdict.isOffender
-                pendingStats.remove(flowId)?.let { s ->
-                    val keep = verdict.isOffender
+                flowOffender[flowId] = offender
+                pendingClose.remove(flowId)?.let { s ->
                     repo.updateStats(
                         rowId, s.bytesOut, s.bytesIn, s.packets, s.durationMs,
-                        if (keep) s.reqText else null, if (keep) s.respText else null,
+                        if (offender) s.reqText else null, if (offender) s.respText else null,
                     )
                     flowIdToRow.remove(flowId)
                     flowOffender.remove(flowId)
                 }
             }
-            if (verdict.isOffender) {
+            if (offender) {
                 Notifications.cleartextAlert(
                     this@TlsWatchdogVpnService,
                     label ?: pkg,
-                    "$dstAddr:$dstPort",
+                    host ?: "$dstAddr:$dstPort",
+                )
+            }
+        }
+    }
+
+    override fun onFlowUpdate(
+        flowId: Long,
+        bytesOut: Long,
+        bytesIn: Long,
+        packets: Int,
+        durationMs: Long,
+        reqSample: ByteArray,
+        respSample: ByteArray,
+    ) {
+        scope.launch {
+            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview() else null
+            val respText = if (respSample.isNotEmpty()) respSample.toPreview() else null
+            bookkeeping.withLock {
+                val rowId = flowIdToRow[flowId] ?: return@withLock
+                val keep = flowOffender[flowId] ?: false
+                repo.updateStats(
+                    rowId, bytesOut, bytesIn, packets, durationMs,
+                    if (keep) reqText else null, if (keep) respText else null,
                 )
             }
         }
@@ -218,8 +246,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                         if (keep) reqText else null, if (keep) respText else null,
                     )
                 } else {
-                    // Stats arrived before the row insert finished; apply on insert.
-                    pendingStats[flowId] = FlowStats(bytesOut, bytesIn, packets, durationMs, reqText, respText)
+                    // Flow closed before its row insert finished; apply on insert.
+                    pendingClose[flowId] = FlowStats(bytesOut, bytesIn, packets, durationMs, reqText, respText)
                 }
             }
         }
@@ -240,7 +268,6 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     companion object {
         private const val TAG = "TlsWatchdogVpn"
         const val MTU = 1500
-        const val RECORD_CAP_BYTES = 16384       // max payload captured per direction when recording
         const val ACTION_START = "com.example.tlswatchdog.START"
         const val ACTION_STOP = "com.example.tlswatchdog.STOP"
     }

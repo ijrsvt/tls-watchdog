@@ -13,6 +13,7 @@ data class FlowEntity(
     val srcPort: Int,
     val dstIp: String,
     val dstPort: Int,
+    val host: String? = null,
     val proto: Int,
     val verdict: String,
     val isOffender: Boolean,

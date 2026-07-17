@@ -6,12 +6,14 @@ import android.net.ConnectivityManager
 import android.os.Process
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 
 /** Maps a flow's 5-tuple to the owning app via getConnectionOwnerUid (API 29+). */
 class Attribution(context: Context) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private val pm: PackageManager = context.packageManager
-    private val labelCache = HashMap<Int, Pair<String?, String?>>() // uid -> (pkg, label)
+    // Accessed from multiple IO threads.
+    private val labelCache = ConcurrentHashMap<Int, Pair<String?, String?>>() // uid -> (pkg, label)
 
     /** @return uid or Process.INVALID_UID if unknown. */
     fun uidFor(proto: Int, srcIp: ByteArray, srcPort: Int, dstIp: ByteArray, dstPort: Int): Int {

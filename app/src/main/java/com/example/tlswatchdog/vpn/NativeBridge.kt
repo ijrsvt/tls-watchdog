@@ -41,6 +41,17 @@ interface VpnCallbacks {
         firstBytes: ByteArray,
     )
 
+    /** Periodic live update for a still-open flow (same shape as [onFlowClose]). */
+    fun onFlowUpdate(
+        flowId: Long,
+        bytesOut: Long,
+        bytesIn: Long,
+        packets: Int,
+        durationMs: Long,
+        reqSample: ByteArray,
+        respSample: ByteArray,
+    )
+
     /**
      * Final stats for a previously reported flow, emitted when the connection closes.
      * [reqSample]/[respSample] hold up to the recording cap of the client->server and
