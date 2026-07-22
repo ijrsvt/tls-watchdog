@@ -66,6 +66,30 @@ R8 is enabled; `app/proguard-rules.pro` keeps the JNI native methods and the
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**On a phone (Wi‑Fi / wireless debugging, no cable):** requires Android 11+ and the
+phone + computer on the same network (client isolation off — a phone hotspot works if
+normal Wi‑Fi blocks device-to-device). `adb` here means
+`~/Android/Sdk/platform-tools/adb`.
+
+1. Phone → Settings → Developer options → **Wireless debugging** → on.
+2. Tap **"Pair device with pairing code"**. It shows an IP:port and a 6‑digit code.
+   These are **regenerated every time the dialog opens** and expire after ~1 minute.
+3. Pair, passing the code as an argument (avoids the interactive prompt):
+   ```bash
+   adb pair 192.168.x.y:<pair-port> <6-digit-code>
+   ```
+   If it errors with `protocol fault (couldn't read status message)`, the session went
+   stale: `adb kill-server`, reopen the pairing dialog for a fresh port+code, retry fast.
+4. Connect using the Wireless‑debugging **main screen** IP:port (different from the pair
+   port), then install:
+   ```bash
+   adb connect 192.168.x.y:<connect-port>
+   adb devices
+   adb -s 192.168.x.y:<connect-port> install app/build/outputs/apk/release/app-release.apk
+   ```
+   `-s` is required when another device (e.g. the ChromeOS ARCVM `100.115.92.2:5555`) is
+   also attached.
+
 **On a Chromebook (locally, into ChromeOS's Android/ARCVM):** the debug build includes an
 `x86_64` native lib for this. One-time: enable ADB in
 `Settings → About ChromeOS → Developers → "Develop Android apps" → Enable ADB debugging`
