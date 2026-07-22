@@ -37,6 +37,28 @@ Requires JDK 17 + Android SDK (platform 35, build-tools 35, NDK r27, CMake 3.22.
 ./gradlew :app:testDebugUnitTest    # FlowClassifier unit tests
 ```
 
+### Release build (signed, minified)
+
+Release signing reads `keystore.properties` (gitignored) at the repo root:
+
+```
+storeFile=/absolute/path/to/your-release.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+Create a keystore once with `keytool -genkeypair -keystore <path>.jks -alias <alias>
+-keyalg RSA -keysize 2048 -validity 10000`, then:
+
+```bash
+./gradlew :app:assembleRelease      # -> app/build/outputs/apk/release/app-release.apk
+```
+
+R8 is enabled; `app/proguard-rules.pro` keeps the JNI native methods and the
+`VpnCallbacks` methods (resolved from C by name) — do not remove those keeps.
+**Keep the keystore + passwords safe**: the same key is required to ship updates.
+
 ## Install & run
 
 **On a phone (USB):**
