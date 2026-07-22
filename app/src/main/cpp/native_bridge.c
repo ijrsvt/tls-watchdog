@@ -76,6 +76,17 @@ static int64_t now_ms(void) {
     return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+// A Kotlin callback (or an allocation) may leave a pending exception on this
+// thread; log and clear it so the next JNI call is not made in a faulted state.
+static int check_and_clear_exc(JNIEnv *env) {
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        return 1;
+    }
+    return 0;
+}
+
 // TLS record (0x16 0x03) or QUIC long header => encrypted, don't record payload.
 static int is_encrypted_start(uint8_t ipproto, const uint8_t *d, int len) {
     if (len < 2) return 0;
@@ -114,11 +125,13 @@ static void grow_append(char **buf, int *len, int *cap, int max,
 static jbyteArray ip_to_bytes(JNIEnv *env, const zdtun_5tuple_t *t, int is_src) {
     if (t->ipver == 4) {
         jbyteArray arr = (*env)->NewByteArray(env, 4);
+        if (!arr) return NULL;
         uint32_t v = is_src ? t->src_ip.ip4 : t->dst_ip.ip4;
         (*env)->SetByteArrayRegion(env, arr, 0, 4, (const jbyte *) &v);
         return arr;
     }
     jbyteArray arr = (*env)->NewByteArray(env, 16);
+    if (!arr) return NULL;
     const void *p = is_src ? (const void *) &t->src_ip.ip6 : (const void *) &t->dst_ip.ip6;
     (*env)->SetByteArrayRegion(env, arr, 0, 16, (const jbyte *) p);
     return arr;
@@ -131,12 +144,20 @@ static void report_flow(capture_ctx *c, uint64_t flow_id, const zdtun_5tuple_t *
     jbyteArray dst = ip_to_bytes(env, t, 0);
     int clen = l7len < CLASSIFY_SNAP ? l7len : CLASSIFY_SNAP;
     jbyteArray first = (*env)->NewByteArray(env, clen);
+    if (!src || !dst || !first) {
+        check_and_clear_exc(env);      // NewByteArray threw OutOfMemoryError
+        if (src) (*env)->DeleteLocalRef(env, src);
+        if (dst) (*env)->DeleteLocalRef(env, dst);
+        if (first) (*env)->DeleteLocalRef(env, first);
+        return;
+    }
     (*env)->SetByteArrayRegion(env, first, 0, clen, (const jbyte *) l7);
 
     (*env)->CallVoidMethod(env, c->callbacks, c->mid_on_flow,
                            (jlong) flow_id, (jint) t->ipver, (jint) t->ipproto,
                            src, (jint) ntohs(t->src_port),
                            dst, (jint) ntohs(t->dst_port), first);
+    check_and_clear_exc(env);          // callback into Kotlin may have thrown
 
     (*env)->DeleteLocalRef(env, src);
     (*env)->DeleteLocalRef(env, dst);
@@ -147,9 +168,15 @@ static void report_flow(capture_ctx *c, uint64_t flow_id, const zdtun_5tuple_t *
 static void emit_flow(capture_ctx *c, conn_state *cs, jmethodID mid) {
     JNIEnv *env = c->env;
     jbyteArray req = (*env)->NewByteArray(env, cs->req_len);
+    jbyteArray resp = (*env)->NewByteArray(env, cs->resp_len);
+    if (!req || !resp) {
+        check_and_clear_exc(env);      // NewByteArray threw OutOfMemoryError
+        if (req) (*env)->DeleteLocalRef(env, req);
+        if (resp) (*env)->DeleteLocalRef(env, resp);
+        return;
+    }
     if (cs->req_len > 0)
         (*env)->SetByteArrayRegion(env, req, 0, cs->req_len, (const jbyte *) cs->req_buf);
-    jbyteArray resp = (*env)->NewByteArray(env, cs->resp_len);
     if (cs->resp_len > 0)
         (*env)->SetByteArrayRegion(env, resp, 0, cs->resp_len, (const jbyte *) cs->resp_buf);
 
@@ -158,6 +185,7 @@ static void emit_flow(capture_ctx *c, conn_state *cs, jmethodID mid) {
                            (jlong) cs->bytes_out, (jlong) cs->bytes_in,
                            (jint) (cs->pkts_out + cs->pkts_in),
                            (jlong) (now_ms() - cs->start_ms), req, resp);
+    check_and_clear_exc(env);          // callback into Kotlin may have thrown
 
     (*env)->DeleteLocalRef(env, req);
     (*env)->DeleteLocalRef(env, resp);
@@ -207,7 +235,7 @@ static void cb_on_socket_open(zdtun_t *tun, socket_t sock) {
     capture_ctx *c = (capture_ctx *) zdtun_userdata(tun);
     if (!c->env || !c->callbacks) return;
     jboolean ok = (*c->env)->CallBooleanMethod(c->env, c->callbacks, c->mid_protect, (jint) sock);
-    if (!ok) LOGE("protect(%d) failed", sock);
+    if (check_and_clear_exc(c->env) || !ok) LOGE("protect(%d) failed", sock);
 }
 
 static int cb_on_connection_open(zdtun_t *tun, zdtun_conn_t *conn) {
@@ -287,7 +315,10 @@ static void capture_loop(capture_ctx *c) {
         // Packets from the apps (client -> server).
         if (FD_ISSET(c->tun_fd, &rd)) {
             ssize_t n = read(c->tun_fd, buf, READ_BUF_SIZE);
-            if (n > 0) {
+            // zdtun_parse_pkt takes a uint16_t length; guard against truncation
+            // (a >64KB read would wrap to a bogus short length). At MTU 1500 this
+            // never triggers, but do not rely on the MTU staying small.
+            if (n > 0 && n <= 0xffff) {
                 zdtun_pkt_t pinfo;
                 int parsed = zdtun_parse_pkt(tun, buf, (uint16_t) n, &pinfo);
                 int proto = (parsed == 0) ? pinfo.tuple.ipproto : 0;

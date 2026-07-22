@@ -165,13 +165,29 @@ private fun AppsTab(vm: MainViewModel) {
     val apps by vm.apps.collectAsState()
     val selected by vm.selected.collectAsState()
     var query by remember { mutableStateOf("") }
-    val shown = apps.filter { query.isBlank() || it.label.contains(query, true) || it.packageName.contains(query, true) }
+    var internetOnly by remember { mutableStateOf(true) }
+    val shown = apps.filter {
+        (!internetOnly || it.hasInternet) &&
+            (query.isBlank() || it.label.contains(query, true) || it.packageName.contains(query, true))
+    }
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query, onValueChange = { query = it },
             label = { Text("Search apps") }, singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         )
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = internetOnly,
+                onClick = { internetOnly = !internetOnly },
+                label = { Text("Internet only") },
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("${shown.size} app(s)", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+        }
         LazyColumn(Modifier.fillMaxSize()) {
             items(shown, key = { it.packageName }) { app ->
                 Row(

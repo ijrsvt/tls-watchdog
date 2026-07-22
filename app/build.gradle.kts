@@ -80,6 +80,12 @@ android {
     }
 }
 
+// Export Room schemas (see FlowDatabase exportSchema = true) so future versions
+// can ship real migrations instead of destroying recorded history.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

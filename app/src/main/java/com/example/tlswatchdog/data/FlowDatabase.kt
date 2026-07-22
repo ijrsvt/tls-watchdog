@@ -5,7 +5,10 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [FlowEntity::class], version = 5, exportSchema = false)
+// exportSchema = true writes the schema JSON (see room.schemaLocation in build.gradle)
+// so migrations can be authored. No destructive fallback: a future schema change must
+// ship a real Migration rather than silently wiping recorded history.
+@Database(entities = [FlowEntity::class], version = 5, exportSchema = true)
 abstract class FlowDatabase : RoomDatabase() {
     abstract fun flowDao(): FlowDao
 
@@ -19,7 +22,7 @@ abstract class FlowDatabase : RoomDatabase() {
                     context.applicationContext,
                     FlowDatabase::class.java,
                     "flows.db",
-                ).fallbackToDestructiveMigration().build().also { instance = it }
+                ).build().also { instance = it }
             }
     }
 }

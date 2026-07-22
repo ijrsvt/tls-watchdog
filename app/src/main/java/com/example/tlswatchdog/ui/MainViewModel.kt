@@ -25,7 +25,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class AppItem(val packageName: String, val label: String, val icon: ImageBitmap?)
+data class AppItem(
+    val packageName: String,
+    val label: String,
+    val icon: ImageBitmap?,
+    val hasInternet: Boolean,
+)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = FlowRepository(app)
@@ -66,12 +71,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val launchable = pm.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0,
         ).map { it.activityInfo.packageName }
-        val internet = try {
+        val internet: Set<String> = try {
             pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
                 .filter { it.requestedPermissions?.contains(Manifest.permission.INTERNET) == true }
                 .map { it.packageName }
+                .toSet()
         } catch (e: Exception) {
-            emptyList()
+            emptySet()
         }
         val items = (launchable + internet).distinct()
             .filter { it != self }
@@ -84,7 +90,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     } catch (e: Exception) {
                         null
                     }
-                    AppItem(pkg, label, icon)
+                    AppItem(pkg, label, icon, hasInternet = pkg in internet)
                 } catch (e: Exception) {
                     null
                 }

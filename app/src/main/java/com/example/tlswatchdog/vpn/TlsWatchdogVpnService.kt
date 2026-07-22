@@ -13,6 +13,7 @@ import com.example.tlswatchdog.data.FlowEntity
 import com.example.tlswatchdog.data.FlowRepository
 import com.example.tlswatchdog.detect.FlowClassifier
 import com.example.tlswatchdog.util.Notifications
+import com.example.tlswatchdog.util.PayloadRedactor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -177,7 +178,9 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     proto = proto,
                     verdict = verdict.name,
                     isOffender = offender,
-                    firstBytesHex = firstBytes.toHex(),
+                    // Redact secret-bearing headers before persisting. Stored regardless
+                    // of the record toggle, but backups are blocked so it stays on-device.
+                    firstBytesHex = PayloadRedactor.redactBytes(firstBytes).toHex(),
                 ),
             )
             bookkeeping.withLock {
@@ -212,8 +215,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         respSample: ByteArray,
     ) {
         scope.launch {
-            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview() else null
-            val respText = if (respSample.isNotEmpty()) respSample.toPreview() else null
+            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview().redact() else null
+            val respText = if (respSample.isNotEmpty()) respSample.toPreview().redact() else null
             bookkeeping.withLock {
                 val rowId = flowIdToRow[flowId] ?: return@withLock
                 val keep = flowOffender[flowId] ?: false
@@ -235,8 +238,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         respSample: ByteArray,
     ) {
         scope.launch {
-            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview() else null
-            val respText = if (respSample.isNotEmpty()) respSample.toPreview() else null
+            val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview().redact() else null
+            val respText = if (respSample.isNotEmpty()) respSample.toPreview().redact() else null
             bookkeeping.withLock {
                 val rowId = flowIdToRow.remove(flowId)
                 if (rowId != null) {
@@ -264,6 +267,9 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                 append(if (c in 0x20..0x7e || c == 0x0a || c == 0x0d || c == 0x09) c.toChar() else '.')
             }
         }
+
+    /** Mask secret-bearing HTTP headers (Authorization, Cookie, …) before persisting. */
+    private fun String.redact(): String = PayloadRedactor.redactText(this)
 
     companion object {
         private const val TAG = "TlsWatchdogVpn"
