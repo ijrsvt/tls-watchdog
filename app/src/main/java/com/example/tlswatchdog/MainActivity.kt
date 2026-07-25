@@ -257,7 +257,7 @@ private fun FlowsTab(vm: MainViewModel) {
                     }
                     VerticalDivider()
                     Box(Modifier.weight(1f).fillMaxSize()) {
-                        selectedFlow?.let { FlowDetail(it) }
+                        selectedFlow?.let { FlowDetail(it, vm) }
                             ?: Text("Select a flow", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.outline)
                     }
                 }
@@ -269,7 +269,7 @@ private fun FlowsTab(vm: MainViewModel) {
                     androidx.compose.ui.window.Dialog(onDismissRequest = { selectedFlow = null }) {
                         Box(
                             Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface),
-                        ) { FlowDetail(selectedFlow!!) }
+                        ) { FlowDetail(selectedFlow!!, vm) }
                     }
                 }
             }
@@ -324,7 +324,8 @@ private fun FlowRow(f: FlowEntity, selected: Boolean, onClick: () -> Unit) {
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(f.appLabel ?: f.packageName ?: "uid ${f.uid}", fontWeight = FontWeight.Medium)
-            Text(f.verdict, color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            val verdictLabel = f.tlsVersion?.let { "${f.verdict} $it" } ?: f.verdict
+            Text(verdictLabel, color = color, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         }
         Text(
             f.host ?: "${f.dstIp}:${f.dstPort}",
@@ -344,14 +345,17 @@ private fun FlowRow(f: FlowEntity, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FlowDetail(f: FlowEntity) {
+private fun FlowDetail(f: FlowEntity, vm: MainViewModel) {
     val clip = LocalClipboardManager.current
+    // Decrypt the payload fields once per row (metadata below stays cleartext).
+    val d = remember(f.id) { vm.decryptDetail(f) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text(f.appLabel ?: f.packageName ?: "uid ${f.uid}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
         val color = if (f.isOffender) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
         Text(f.verdict, color = color, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         DetailRow("Host", f.host ?: "—")
+        f.tlsVersion?.let { DetailRow("TLS version", it) }
         DetailRow("Destination", "${f.dstIp}:${f.dstPort}")
         DetailRow("Protocol", if (f.proto == 6) "TCP" else if (f.proto == 17) "UDP" else "proto ${f.proto}")
         DetailRow("Source port", f.srcPort.toString())
@@ -367,8 +371,8 @@ private fun FlowDetail(f: FlowEntity) {
                 Text("Copy host")
             }
         }
-        PayloadSection("Request", f.sampleText, clip)
-        PayloadSection("Response", f.responseText, clip)
+        PayloadSection("Request", d.sampleText, clip)
+        PayloadSection("Response", d.responseText, clip)
     }
 }
 
@@ -399,6 +403,7 @@ private fun DetailRow(label: String, value: String) {
 private fun SettingsTab(vm: MainViewModel) {
     val cap by vm.cap.collectAsState()
     val flagUdp by vm.flagUdp.collectAsState()
+    val flagOldTls by vm.flagOldTls.collectAsState()
     val autoStart by vm.autoStart.collectAsState()
     val running by vm.running.collectAsState()
 
@@ -419,6 +424,7 @@ private fun SettingsTab(vm: MainViewModel) {
         Spacer(Modifier.height(20.dp))
         Text("Classification", fontWeight = FontWeight.Bold, fontSize = 16.sp)
         SettingSwitch("Flag non-QUIC UDP as cleartext", "Treat plaintext UDP (DNS, etc.) as offenders. Noisy.", flagUdp, !running) { vm.setFlagUdp(it) }
+        SettingSwitch("Flag outdated TLS (< 1.2)", "Mark flows negotiating SSL 3.0 / TLS 1.0 / 1.1 as offenders.", flagOldTls, !running) { vm.setFlagOldTls(it) }
 
         Spacer(Modifier.height(20.dp))
         Text("General", fontWeight = FontWeight.Bold, fontSize = 16.sp)

@@ -41,6 +41,12 @@ interface VpnCallbacks {
         firstBytes: ByteArray,
     )
 
+    /**
+     * First server->client payload of a TLS flow (the ServerHello), delivered once so the
+     * negotiated TLS version can be read. Bytes are parsed and discarded — not persisted.
+     */
+    fun onServerHello(flowId: Long, serverBytes: ByteArray)
+
     /** Periodic live update for a still-open flow (same shape as [onFlowClose]). */
     fun onFlowUpdate(
         flowId: Long,

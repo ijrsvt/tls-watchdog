@@ -25,6 +25,12 @@ interface FlowDao {
         responseText: String?,
     )
 
+    @Query("UPDATE flows SET tlsVersion = :tlsVersion WHERE id = :id")
+    suspend fun updateTlsVersion(id: Long, tlsVersion: String?)
+
+    @Query("UPDATE flows SET isOffender = 1 WHERE id = :id")
+    suspend fun markOffender(id: Long)
+
     @Query("SELECT * FROM flows ORDER BY timestamp DESC LIMIT 2000")
     fun observeAll(): Flow<List<FlowEntity>>
 
