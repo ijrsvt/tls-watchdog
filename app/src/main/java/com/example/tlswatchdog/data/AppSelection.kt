@@ -61,6 +61,17 @@ object AppSelection {
         context.dataStore.edit { it[FLAG_UDP_KEY] = enabled }
     }
 
+    private val FLAG_OLD_TLS_KEY = booleanPreferencesKey("flag_old_tls")
+
+    fun observeFlagOldTls(context: Context): Flow<Boolean> =
+        context.dataStore.data.map { it[FLAG_OLD_TLS_KEY] ?: false }
+
+    suspend fun getFlagOldTls(context: Context): Boolean = observeFlagOldTls(context).first()
+
+    suspend fun setFlagOldTls(context: Context, enabled: Boolean) {
+        context.dataStore.edit { it[FLAG_OLD_TLS_KEY] = enabled }
+    }
+
     fun observeAutoStart(context: Context): Flow<Boolean> =
         context.dataStore.data.map { it[AUTOSTART_KEY] ?: false }
 

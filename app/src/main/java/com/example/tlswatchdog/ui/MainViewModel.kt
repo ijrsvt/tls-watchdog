@@ -46,11 +46,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         AppSelection.observeCap(app).stateIn(viewModelScope, SharingStarted.Eagerly, AppSelection.DEFAULT_CAP)
     val flagUdp: StateFlow<Boolean> =
         AppSelection.observeFlagUdp(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val flagOldTls: StateFlow<Boolean> =
+        AppSelection.observeFlagOldTls(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val autoStart: StateFlow<Boolean> =
         AppSelection.observeAutoStart(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun setCap(bytes: Int) = viewModelScope.launch { AppSelection.setCap(getApplication(), bytes) }
     fun setFlagUdp(enabled: Boolean) = viewModelScope.launch { AppSelection.setFlagUdp(getApplication(), enabled) }
+    fun setFlagOldTls(enabled: Boolean) = viewModelScope.launch { AppSelection.setFlagOldTls(getApplication(), enabled) }
+
+    /** Decrypt a single row's payload fields for the detail view (cheap; call inside remember). */
+    fun decryptDetail(f: FlowEntity): FlowEntity = repo.decryptDetail(f)
     fun setAutoStart(enabled: Boolean) = viewModelScope.launch { AppSelection.setAutoStart(getApplication(), enabled) }
 
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
@@ -116,10 +122,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         val sb = StringBuilder()
         sb.append(
-            "time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,offender," +
+            "time,app,package,uid,src_port,dst_ip,dst_port,proto,verdict,tls_version,offender," +
                 "bytes_out,bytes_in,packets,duration_ms,first_bytes_hex,request_text,response_text\n",
         )
-        for (r in rows) {
+        for (r0 in rows) {
+            val r = repo.decryptDetail(r0) // decrypt the sensitive fields for export
             sb.append(fmt.format(Date(r.timestamp))).append(',')
                 .append(csv(r.appLabel)).append(',')
                 .append(csv(r.packageName)).append(',')
@@ -129,6 +136,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .append(r.dstPort).append(',')
                 .append(r.proto).append(',')
                 .append(r.verdict).append(',')
+                .append(csv(r.tlsVersion)).append(',')
                 .append(r.isOffender).append(',')
                 .append(r.bytesOut).append(',')
                 .append(r.bytesIn).append(',')

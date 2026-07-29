@@ -1,0 +1,154 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 6,
+    "identityHash": "9087dd2813ae6bb48c696c44cc713e8b",
+    "entities": [
+      {
+        "tableName": "flows",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `uid` INTEGER NOT NULL, `packageName` TEXT, `appLabel` TEXT, `srcPort` INTEGER NOT NULL, `dstIp` TEXT NOT NULL, `dstPort` INTEGER NOT NULL, `host` TEXT, `proto` INTEGER NOT NULL, `verdict` TEXT NOT NULL, `isOffender` INTEGER NOT NULL, `tlsVersion` TEXT, `keyId` TEXT, `firstBytesHex` TEXT NOT NULL, `sampleText` TEXT, `responseText` TEXT, `bytesOut` INTEGER NOT NULL, `bytesIn` INTEGER NOT NULL, `packets` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packageName",
+            "columnName": "packageName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "appLabel",
+            "columnName": "appLabel",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "srcPort",
+            "columnName": "srcPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dstIp",
+            "columnName": "dstIp",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dstPort",
+            "columnName": "dstPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "host",
+            "columnName": "host",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "proto",
+            "columnName": "proto",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verdict",
+            "columnName": "verdict",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isOffender",
+            "columnName": "isOffender",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tlsVersion",
+            "columnName": "tlsVersion",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "keyId",
+            "columnName": "keyId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "firstBytesHex",
+            "columnName": "firstBytesHex",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sampleText",
+            "columnName": "sampleText",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "responseText",
+            "columnName": "responseText",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "bytesOut",
+            "columnName": "bytesOut",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bytesIn",
+            "columnName": "bytesIn",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packets",
+            "columnName": "packets",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9087dd2813ae6bb48c696c44cc713e8b')"
+    ]
+  }
+}

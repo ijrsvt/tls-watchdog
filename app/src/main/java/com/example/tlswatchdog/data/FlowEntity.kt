@@ -17,10 +17,18 @@ data class FlowEntity(
     val proto: Int,
     val verdict: String,
     val isOffender: Boolean,
+    /** Negotiated TLS version ("1.3", "1.2", …) or offered ("1.3 (offered)"); null when not TLS. */
+    val tlsVersion: String? = null,
+    /**
+     * Per-row key id (a UUID) used to derive this row's encryption key. Null for rows
+     * written before encryption existed (legacy plaintext) — see FlowCrypto/FlowRepository.
+     */
+    val keyId: String? = null,
+    /** AES-GCM ciphertext (Base64) when [keyId] != null; plaintext hex for legacy rows. */
     val firstBytesHex: String,
-    /** Decoded printable preview of the cleartext request; null unless recording was on. */
+    /** Encrypted printable preview of the cleartext request; null unless recording was on. */
     val sampleText: String? = null,
-    /** Decoded printable preview of the cleartext response; null unless recording was on. */
+    /** Encrypted printable preview of the cleartext response; null unless recording was on. */
     val responseText: String? = null,
     // Lifetime stats, filled in when the connection closes.
     val bytesOut: Long = 0,

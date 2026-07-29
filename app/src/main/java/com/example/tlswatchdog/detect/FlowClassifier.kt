@@ -40,8 +40,8 @@ object FlowClassifier {
 
     private fun classifyTcp(p: ByteArray): Verdict {
         if (p.size < 3) return Verdict.UNKNOWN
-        // TLS handshake record: content type 0x16, version major 0x03.
-        if (u(p, 0) == 0x16 && u(p, 1) == 0x03) return Verdict.TLS
+        // Structurally-validated TLS handshake record (not just the first two bytes).
+        if (looksLikeTlsHandshake(p)) return Verdict.TLS
 
         val n = minOf(p.size, 16)
         val ascii = String(p, 0, n, Charsets.US_ASCII)
@@ -89,7 +89,125 @@ object FlowClassifier {
     /** Best-effort destination hostname: TLS SNI or HTTP Host header. */
     fun extractHost(proto: Int, p: ByteArray): String? {
         if (proto != IPPROTO_TCP || p.size < 6) return null
-        return if (u(p, 0) == 0x16 && u(p, 1) == 0x03) parseSni(p) else parseHttpHost(p)
+        return if (looksLikeTlsHandshake(p)) parseSni(p) else parseHttpHost(p)
+    }
+
+    /**
+     * Detected TLS version of a captured handshake payload, or null if not a TLS handshake.
+     * A ClientHello yields the highest **offered** version ("1.3 (offered)"); a ServerHello
+     * yields the single **negotiated** version ("1.3"). See [tlsVersion]/[negotiatedTlsVersion].
+     */
+    fun tlsVersion(proto: Int, p: ByteArray): String? =
+        if (proto == IPPROTO_TCP) parseTlsVersion(p) else null
+
+    /** Negotiated version from a ServerHello payload (unqualified, e.g. "1.3"), or null. */
+    fun negotiatedTlsVersion(p: ByteArray): String? = parseTlsVersion(p)
+
+    /** True for TLS older than 1.2 (SSL3.0 / TLS 1.0 / TLS 1.1), offered or negotiated. */
+    fun isOutdatedTls(v: String?): Boolean =
+        v != null && (v.startsWith("1.0") || v.startsWith("1.1") || v.startsWith("SSL3"))
+
+    /**
+     * Cheap structural validation of a TLS *handshake record header* — robust to a
+     * ClientHello split across TCP segments (the body may be truncated). This is the
+     * hardened replacement for the old two-byte check.
+     */
+    private fun looksLikeTlsHandshake(p: ByteArray): Boolean {
+        if (p.size < 6) return false
+        if (u(p, 0) != 0x16 || u(p, 1) != 0x03 || u(p, 2) > 0x04) return false // content-type + record version
+        val recLen = (u(p, 3) shl 8) or u(p, 4)
+        if (recLen < 1 || recLen > 0x4000) return false                        // TLS records are <= 2^14
+        val ht = u(p, 5)
+        return ht == 0x01 || ht == 0x02                                        // ClientHello or ServerHello
+    }
+
+    /** Parsed shape of a TLS ClientHello/ServerHello handshake. */
+    private data class TlsHello(
+        val handshakeType: Int, // 0x01 ClientHello, 0x02 ServerHello
+        val legacyVersion: Int, // e.g. 0x0303
+        val extensions: Map<Int, IntRange>, // ext type -> byte range within p
+    )
+
+    /**
+     * Walk a TLS handshake record and index its extensions; null if not a structurally
+     * valid ClientHello/ServerHello. Shared by SNI and version detection. A ServerHello
+     * differs only in that cipher_suite / compression are single values, not lists.
+     */
+    private fun parseHello(p: ByteArray): TlsHello? {
+        try {
+            if (!looksLikeTlsHandshake(p)) return null
+            val ht = u(p, 5)
+            var o = 5 + 4 // skip handshake type(1) + length(3)
+            if (o + 2 > p.size) return null
+            val legacyVersion = (u(p, o) shl 8) or u(p, o + 1)
+            o += 2 // client/server version
+            o += 32 // random
+            if (o >= p.size) return null
+            o += 1 + u(p, o) // session_id
+            if (ht == 0x01) { // ClientHello: cipher_suites list + compression list
+                if (o + 2 > p.size) return null
+                o += 2 + ((u(p, o) shl 8) or u(p, o + 1))
+                if (o >= p.size) return null
+                o += 1 + u(p, o)
+            } else { // ServerHello: single cipher_suite(2) + single compression(1)
+                o += 3
+            }
+            if (o + 2 > p.size) return null
+            val extEnd = minOf(o + 2 + ((u(p, o) shl 8) or u(p, o + 1)), p.size)
+            o += 2
+            val exts = HashMap<Int, IntRange>()
+            while (o + 4 <= extEnd) {
+                val type = (u(p, o) shl 8) or u(p, o + 1)
+                val len = (u(p, o + 2) shl 8) or u(p, o + 3)
+                o += 4
+                if (o + len <= p.size) exts[type] = o until (o + len)
+                o += len
+            }
+            return TlsHello(ht, legacyVersion, exts)
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    // GREASE values (RFC 8701) are 0x0a0a, 0x1a1a, … 0xfafa: both bytes equal, low nibble 0xa.
+    private fun isGrease(v: Int): Boolean =
+        (v and 0x0f0f) == 0x0a0a && (v ushr 8) == (v and 0xff)
+
+    /**
+     * Version string from a ClientHello (highest offered, suffixed " (offered)") or a
+     * ServerHello (the single selected version, unqualified). The real version lives in the
+     * supported_versions extension (0x002b); legacy_version is a decoy 0x0303 in TLS 1.3.
+     */
+    private fun parseTlsVersion(p: ByteArray): String? {
+        val hello = parseHello(p) ?: return null
+        val ext = hello.extensions[0x002b]
+        val server = hello.handshakeType == 0x02
+        val chosen: Int = when {
+            ext != null && !server -> { // ClientHello: 1-byte list length, then 2-byte versions
+                var best = 0
+                var i = ext.first + 1
+                while (i + 1 <= ext.last) {
+                    val v = (u(p, i) shl 8) or u(p, i + 1)
+                    if (!isGrease(v) && v > best) best = v
+                    i += 2
+                }
+                if (best != 0) best else hello.legacyVersion
+            }
+            ext != null && server -> { // ServerHello: single 2-byte selected version
+                if (ext.last - ext.first + 1 < 2) hello.legacyVersion
+                else (u(p, ext.first) shl 8) or u(p, ext.first + 1)
+            }
+            else -> hello.legacyVersion
+        }
+        val name = when (chosen) {
+            0x0304 -> "1.3"
+            0x0303 -> "1.2"
+            0x0302 -> "1.1"
+            0x0301 -> "1.0"
+            0x0300 -> "SSL3.0"
+            else -> return null
+        }
+        return if (server) name else "$name (offered)"
     }
 
     private fun parseHttpHost(p: ByteArray): String? {
@@ -105,40 +223,16 @@ object FlowClassifier {
 
     /** Parse the SNI (server_name) extension out of a TLS ClientHello. */
     private fun parseSni(p: ByteArray): String? {
-        try {
-            var o = 5 // skip record header
-            if (u(p, o) != 0x01) return null // ClientHello
-            o += 4 // handshake type(1) + length(3)
-            o += 2 // client_version
-            o += 32 // random
-            if (o >= p.size) return null
-            o += 1 + u(p, o) // session_id
-            if (o + 2 > p.size) return null
-            o += 2 + ((u(p, o) shl 8) or u(p, o + 1)) // cipher_suites
-            if (o >= p.size) return null
-            o += 1 + u(p, o) // compression_methods
-            if (o + 2 > p.size) return null
-            var extEnd = o + 2 + ((u(p, o) shl 8) or u(p, o + 1))
-            o += 2
-            extEnd = minOf(extEnd, p.size)
-            while (o + 4 <= extEnd) {
-                val type = (u(p, o) shl 8) or u(p, o + 1)
-                val len = (u(p, o + 2) shl 8) or u(p, o + 3)
-                o += 4
-                if (type == 0x0000) { // server_name
-                    // server_name_list(2) + name_type(1) + name_len(2) + name
-                    if (o + 5 > p.size) return null
-                    val nameLen = (u(p, o + 3) shl 8) or u(p, o + 4)
-                    val start = o + 5
-                    if (start + nameLen > p.size) return null
-                    return String(p, start, nameLen, Charsets.US_ASCII)
-                }
-                o += len
-            }
-        } catch (e: Exception) {
-            return null
-        }
-        return null
+        val hello = parseHello(p) ?: return null
+        if (hello.handshakeType != 0x01) return null
+        val ext = hello.extensions[0x0000] ?: return null // server_name
+        // server_name_list(2) + name_type(1) + name_len(2) + name
+        val o = ext.first
+        if (o + 5 > p.size) return null
+        val nameLen = (u(p, o + 3) shl 8) or u(p, o + 4)
+        val start = o + 5
+        if (start + nameLen > p.size) return null
+        return String(p, start, nameLen, Charsets.US_ASCII)
     }
 
     private fun u(p: ByteArray, i: Int): Int = p[i].toInt() and 0xff

@@ -30,10 +30,13 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private var running = false
     private var recordCleartext = false
     private var flagUdp = false
+    private var flagOldTls = false
     private var recordCap = 0
 
-    // Correlate native flow ids with DB row ids. onFlow (insert) and onFlowClose
-    // (stats) race, so guard the maps and stash stats that arrive before the row.
+    // Correlate native flow ids with DB rows. onFlow (insert), onFlowClose (stats) and
+    // onServerHello (TLS version) race, so guard the maps and stash whatever arrives
+    // before the row insert completes.
+    private data class RowRef(val rowId: Long, val keyId: String)
     private data class FlowStats(
         val bytesOut: Long,
         val bytesIn: Long,
@@ -42,9 +45,10 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         val reqText: String?,
         val respText: String?,
     )
-    private val flowIdToRow = HashMap<Long, Long>()
+    private val flowIdToRow = HashMap<Long, RowRef>()
     private val flowOffender = HashMap<Long, Boolean>()
     private val pendingClose = HashMap<Long, FlowStats>()
+    private val pendingServerHello = HashMap<Long, String>() // flowId -> negotiated version
     private val bookkeeping = kotlinx.coroutines.sync.Mutex()
 
     override fun onCreate() {
@@ -70,6 +74,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         val selected = runBlocking { AppSelection.get(this@TlsWatchdogVpnService) }
         recordCleartext = runBlocking { AppSelection.getRecord(this@TlsWatchdogVpnService) }
         flagUdp = runBlocking { AppSelection.getFlagUdp(this@TlsWatchdogVpnService) }
+        flagOldTls = runBlocking { AppSelection.getFlagOldTls(this@TlsWatchdogVpnService) }
         recordCap = if (recordCleartext) runBlocking { AppSelection.getCap(this@TlsWatchdogVpnService) } else 0
         if (selected.isEmpty()) {
             Log.w(TAG, "no apps selected; not starting")
@@ -161,9 +166,14 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         scope.launch {
             val verdict = FlowClassifier.classify(proto, dstPort, firstBytes)
             val host = FlowClassifier.extractHost(proto, firstBytes)
-            val offender = verdict.isOffender(flagUdp)
+            // keepPayload drives cleartext retention + the alert; the DB offender flag also
+            // covers outdated TLS (which has no recorded payload).
+            val keepPayload = verdict.isOffender(flagUdp)
+            val tlsVersion = FlowClassifier.tlsVersion(proto, firstBytes) // offered; upgraded by ServerHello
+            val offender = keepPayload || (flagOldTls && FlowClassifier.isOutdatedTls(tlsVersion))
             val uid = attribution.uidFor(proto, srcIp, srcPort, dstIp, dstPort)
             val (pkg, label) = attribution.appFor(uid)
+            val keyId = java.util.UUID.randomUUID().toString()
             // Payload samples are filled in by live updates / close.
             val rowId = repo.insert(
                 FlowEntity(
@@ -178,29 +188,52 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
                     proto = proto,
                     verdict = verdict.name,
                     isOffender = offender,
+                    tlsVersion = tlsVersion,
+                    keyId = keyId,
                     // Redact secret-bearing headers before persisting. Stored regardless
                     // of the record toggle, but backups are blocked so it stays on-device.
                     firstBytesHex = PayloadRedactor.redactBytes(firstBytes).toHex(),
                 ),
             )
             bookkeeping.withLock {
-                flowIdToRow[flowId] = rowId
-                flowOffender[flowId] = offender
+                flowIdToRow[flowId] = RowRef(rowId, keyId)
+                flowOffender[flowId] = keepPayload
                 pendingClose.remove(flowId)?.let { s ->
                     repo.updateStats(
-                        rowId, s.bytesOut, s.bytesIn, s.packets, s.durationMs,
-                        if (offender) s.reqText else null, if (offender) s.respText else null,
+                        rowId, keyId, s.bytesOut, s.bytesIn, s.packets, s.durationMs,
+                        if (keepPayload) s.reqText else null, if (keepPayload) s.respText else null,
                     )
                     flowIdToRow.remove(flowId)
                     flowOffender.remove(flowId)
                 }
+                pendingServerHello.remove(flowId)?.let { negotiated ->
+                    repo.updateTlsVersion(
+                        rowId, negotiated, flagOldTls && FlowClassifier.isOutdatedTls(negotiated),
+                    )
+                }
             }
-            if (offender) {
+            if (keepPayload) {
                 Notifications.cleartextAlert(
                     this@TlsWatchdogVpnService,
                     label ?: pkg,
                     host ?: "$dstAddr:$dstPort",
                 )
+            }
+        }
+    }
+
+    override fun onServerHello(flowId: Long, serverBytes: ByteArray) {
+        scope.launch {
+            val negotiated = FlowClassifier.negotiatedTlsVersion(serverBytes) ?: return@launch
+            val markOffender = flagOldTls && FlowClassifier.isOutdatedTls(negotiated)
+            bookkeeping.withLock {
+                val ref = flowIdToRow[flowId]
+                if (ref != null) {
+                    repo.updateTlsVersion(ref.rowId, negotiated, markOffender)
+                } else {
+                    // ServerHello beat the row insert; apply on insert.
+                    pendingServerHello[flowId] = negotiated
+                }
             }
         }
     }
@@ -218,10 +251,10 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview().redact() else null
             val respText = if (respSample.isNotEmpty()) respSample.toPreview().redact() else null
             bookkeeping.withLock {
-                val rowId = flowIdToRow[flowId] ?: return@withLock
+                val ref = flowIdToRow[flowId] ?: return@withLock
                 val keep = flowOffender[flowId] ?: false
                 repo.updateStats(
-                    rowId, bytesOut, bytesIn, packets, durationMs,
+                    ref.rowId, ref.keyId, bytesOut, bytesIn, packets, durationMs,
                     if (keep) reqText else null, if (keep) respText else null,
                 )
             }
@@ -241,11 +274,11 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             val reqText = if (reqSample.isNotEmpty()) reqSample.toPreview().redact() else null
             val respText = if (respSample.isNotEmpty()) respSample.toPreview().redact() else null
             bookkeeping.withLock {
-                val rowId = flowIdToRow.remove(flowId)
-                if (rowId != null) {
+                val ref = flowIdToRow.remove(flowId)
+                if (ref != null) {
                     val keep = flowOffender.remove(flowId) ?: false
                     repo.updateStats(
-                        rowId, bytesOut, bytesIn, packets, durationMs,
+                        ref.rowId, ref.keyId, bytesOut, bytesIn, packets, durationMs,
                         if (keep) reqText else null, if (keep) respText else null,
                     )
                 } else {

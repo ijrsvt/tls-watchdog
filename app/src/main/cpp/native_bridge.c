@@ -52,6 +52,7 @@ typedef struct {
     jmethodID mid_on_flow;        // void onFlow(long,int,int,byte[],int,byte[],int,byte[])
     jmethodID mid_on_flow_update; // void onFlowUpdate(long,long,long,int,long,byte[],byte[])
     jmethodID mid_on_flow_close;  // void onFlowClose(long,long,long,int,long,byte[],byte[])
+    jmethodID mid_on_server_hello; // void onServerHello(long,byte[])
 } capture_ctx;
 
 typedef struct {
@@ -59,6 +60,8 @@ typedef struct {
     int reported;
     int classified;         // decided should_record yet?
     int should_record;      // 1 for cleartext flows we keep payload for
+    int want_shello;        // client opened with a TLS ClientHello => grab the ServerHello
+    int shello_sent;        // ServerHello already delivered to Kotlin (one-shot)
     uint64_t bytes_out;
     uint64_t bytes_in;
     uint32_t pkts_out;
@@ -87,13 +90,15 @@ static int check_and_clear_exc(JNIEnv *env) {
     return 0;
 }
 
-// TLS record (0x16 0x03) or QUIC long header => encrypted, don't record payload.
+// TLS handshake record or QUIC long header => encrypted, don't record payload.
+// TCP check is structural (content-type + record version + handshake type), matching
+// the hardened Kotlin FlowClassifier so the two agree on what "TLS start" means.
 static int is_encrypted_start(uint8_t ipproto, const uint8_t *d, int len) {
-    if (len < 2) return 0;
     if (ipproto == IPPROTO_TCP)
-        return (d[0] == 0x16 && d[0 + 1] == 0x03);
+        return (len >= 6 && d[0] == 0x16 && d[1] == 0x03 && d[2] <= 0x04 &&
+                (d[5] == 0x01 || d[5] == 0x02));
     if (ipproto == IPPROTO_UDP)
-        return ((d[0] & 0xc0) == 0xc0); // QUIC long header (Initial)
+        return (len >= 1 && (d[0] & 0xc0) == 0xc0); // QUIC long header (Initial)
     return 0;
 }
 
@@ -164,6 +169,18 @@ static void report_flow(capture_ctx *c, uint64_t flow_id, const zdtun_5tuple_t *
     (*env)->DeleteLocalRef(env, first);
 }
 
+// Deliver the first server->client payload (ServerHello) once, for TLS version parsing.
+static void emit_server_hello(capture_ctx *c, uint64_t id, const uint8_t *l7, int l7len) {
+    JNIEnv *env = c->env;
+    int n = l7len < CLASSIFY_SNAP ? l7len : CLASSIFY_SNAP;
+    jbyteArray arr = (*env)->NewByteArray(env, n);
+    if (!arr) { check_and_clear_exc(env); return; }
+    (*env)->SetByteArrayRegion(env, arr, 0, n, (const jbyte *) l7);
+    (*env)->CallVoidMethod(env, c->callbacks, c->mid_on_server_hello, (jlong) id, arr);
+    check_and_clear_exc(env);
+    (*env)->DeleteLocalRef(env, arr);
+}
+
 // Emit accumulated stats + payload via the given method (update or close).
 static void emit_flow(capture_ctx *c, conn_state *cs, jmethodID mid) {
     JNIEnv *env = c->env;
@@ -221,6 +238,11 @@ static int cb_send_client(zdtun_t *tun, zdtun_pkt_t *pkt, const zdtun_conn_t *co
             if (cs->should_record)
                 grow_append(&cs->resp_buf, &cs->resp_len, &cs->resp_cap,
                             c->record_cap, pkt->l7, pkt->l7_len);
+            // First server payload after a ClientHello is the ServerHello.
+            if (cs->want_shello && !cs->shello_sent) {
+                cs->shello_sent = 1;
+                emit_server_hello(c, cs->id, (const uint8_t *) pkt->l7, pkt->l7_len);
+            }
         }
     }
     ssize_t n = write(c->tun_fd, pkt->buf, pkt->len);
@@ -343,6 +365,9 @@ static void capture_loop(capture_ctx *c) {
                         cs->pkts_out++;
                         if (is_data) {
                             maybe_classify(c, cs, (uint8_t) proto, seg, seglen);
+                            // A TLS ClientHello from the client => capture the ServerHello reply.
+                            if (proto == IPPROTO_TCP && is_encrypted_start((uint8_t) proto, seg, seglen))
+                                cs->want_shello = 1;
                             if (cs->should_record)
                                 grow_append(&cs->req_buf, &cs->req_len, &cs->req_cap,
                                             c->record_cap, (const char *) seg, seglen);
@@ -426,7 +451,8 @@ Java_com_example_tlswatchdog_vpn_NativeBridge_nativeStartCapture(
     g_ctx.mid_on_flow = (*env)->GetMethodID(env, cls, "onFlow", "(JII[BI[BI[B)V");
     g_ctx.mid_on_flow_update = (*env)->GetMethodID(env, cls, "onFlowUpdate", "(JJJIJ[B[B)V");
     g_ctx.mid_on_flow_close = (*env)->GetMethodID(env, cls, "onFlowClose", "(JJJIJ[B[B)V");
-    if (!g_ctx.mid_protect || !g_ctx.mid_on_flow ||
+    g_ctx.mid_on_server_hello = (*env)->GetMethodID(env, cls, "onServerHello", "(J[B)V");
+    if (!g_ctx.mid_protect || !g_ctx.mid_on_flow || !g_ctx.mid_on_server_hello ||
         !g_ctx.mid_on_flow_update || !g_ctx.mid_on_flow_close) {
         LOGE("failed to resolve callback methods");
         g_ctx.running = 0;
