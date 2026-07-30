@@ -434,6 +434,25 @@ private fun SettingsTab(vm: MainViewModel) {
             Spacer(Modifier.height(16.dp))
             Text("Stop monitoring to change size/UDP settings.", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
         }
+
+        Spacer(Modifier.height(20.dp))
+        Text("About", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        val context = LocalContext.current
+        val (versionName, versionCode) = remember {
+            runCatching {
+                val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+                (pi.versionName ?: "?") to pi.longVersionCode
+            }.getOrDefault("?" to 0L)
+        }
+        Text("TLS Watchdog", fontWeight = FontWeight.Medium)
+        DetailRow("Version", "$versionName (build $versionCode)")
+        DetailRow("Commit", BuildConfig.GIT_SHA)
+        DetailRow("Commit date", BuildConfig.GIT_COMMIT_TIME)
+        DetailRow("Package", context.packageName)
+        Text(
+            "On-device TLS usage monitor via a local VPN. Flags outbound traffic not using TLS.",
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 

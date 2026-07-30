@@ -13,6 +13,22 @@ val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
 
+// Build metadata for the About screen. Derived from git so the values only change when
+// HEAD or the working tree changes — a wall-clock timestamp would change every build and
+// make generateBuildConfig (and everything downstream) never UP-TO-DATE, defeating
+// incremental builds. Stable inputs keep `assemble` cacheable.
+fun gitOutput(vararg args: String): String? = runCatching {
+    providers.exec { commandLine("git", *args) }.standardOutput.asText.get().trim()
+}.getOrNull()?.ifEmpty { null }
+
+val gitSha: String = run {
+    val sha = gitOutput("rev-parse", "--short", "HEAD") ?: "unknown"
+    val dirty = gitOutput("status", "--porcelain")?.isNotEmpty() == true
+    if (dirty) "$sha-dirty" else sha
+}
+val gitCommitTime: String =
+    gitOutput("log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M") ?: "unknown"
+
 android {
     namespace = "com.example.tlswatchdog"
     compileSdk = 35
@@ -25,6 +41,9 @@ android {
         versionName = "0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "GIT_COMMIT_TIME", "\"$gitCommitTime\"")
 
         externalNativeBuild {
             cmake {
@@ -77,6 +96,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
