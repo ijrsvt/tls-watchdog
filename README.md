@@ -3,9 +3,11 @@
 An on-device Android VPN that flags outbound connections **not** using TLS, so you can
 verify which apps encrypt their traffic (e.g. catch an app doing raw HTTP).
 
-It uses `VpnService` (no root) to route **only the apps you select** through a userspace
-TCP/UDP forwarder ([zdtun](https://github.com/emanuele-f/zdtun), LGPL — the same engine
-PCAPdroid uses). For each TCP flow it inspects the first client→server payload and records a
+It uses `VpnService` (no root) to route traffic through a userspace TCP/UDP forwarder
+([zdtun](https://github.com/emanuele-f/zdtun), LGPL — the same engine PCAPdroid uses).
+By default it routes **only the apps you select** (the main performance lever); a
+**"Monitor all apps"** toggle on the Monitor tab switches to full-system mode, routing every
+app except itself. For each TCP flow it inspects the first client→server payload and records a
 verdict: `TLS`, `CLEARTEXT_HTTP`, `CLEARTEXT_OTHER`, or `UNKNOWN`.
 
 ## Architecture
@@ -22,7 +24,8 @@ selected apps → TUN (VpnService) → zdtun (native) → protect()'d sockets �
   the first TCP payload per flow.
 - `app/src/main/cpp/zdtun/` — vendored zdtun library (LGPL-3.0).
 - `vpn/TlsWatchdogVpnService.kt` — builds the TUN with `addAllowedApplication` (per-app
-  scoping = the main performance lever), foreground service, classify→attribute→persist→alert.
+  scoping = the main performance lever) or, in full-system mode, `addDisallowedApplication`
+  for just itself; foreground service, classify→attribute→persist→alert.
 - `detect/FlowClassifier.kt` — content-based TLS/cleartext detection (never port-based).
 - `attribution/Attribution.kt` — `getConnectionOwnerUid` (API 29+) → package/label.
 - `ui/` + `MainActivity.kt` — Monitor / Apps / Flows tabs, CSV export.
@@ -103,7 +106,8 @@ Note: only *Android* apps' traffic is seen — not the ChromeOS browser or Linux
 Managed/enterprise Chromebooks may block ADB by policy.
 
 Then, on either platform:
-1. Open the app → **Apps** tab → tick the app(s) to audit (e.g. your bank).
+1. Open the app → **Apps** tab → tick the app(s) to audit (e.g. your bank). Or, on the
+   **Monitor** tab, flip **"Monitor all apps"** to audit the whole device instead.
 2. **Monitor** tab → **Start monitoring** → accept the system VPN consent dialog.
 3. Use the audited apps; watch verdicts appear in the **Flows** tab.
 
@@ -122,4 +126,5 @@ Then, on either platform:
 - Only one `VpnService` can run at a time (no-root limitation) — can't run alongside another VPN.
 - MVP classifies **TCP**. UDP/QUIC is forwarded but not yet classified (Phase 3).
 - Per-app routing means only selected apps pay the userspace-forwarding cost; everything else
-  bypasses at the kernel.
+  bypasses at the kernel. Full-system mode ("Monitor all apps") routes everything and costs more
+  battery/latency accordingly.

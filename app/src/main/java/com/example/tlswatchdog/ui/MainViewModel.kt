@@ -50,6 +50,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         AppSelection.observeFlagOldTls(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val autoStart: StateFlow<Boolean> =
         AppSelection.observeAutoStart(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val monitorAllApps: StateFlow<Boolean> =
+        AppSelection.observeMonitorAllApps(app).stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun setCap(bytes: Int) = viewModelScope.launch { AppSelection.setCap(getApplication(), bytes) }
     fun setFlagUdp(enabled: Boolean) = viewModelScope.launch { AppSelection.setFlagUdp(getApplication(), enabled) }
@@ -58,6 +60,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Decrypt a single row's payload fields for the detail view (cheap; call inside remember). */
     fun decryptDetail(f: FlowEntity): FlowEntity = repo.decryptDetail(f)
     fun setAutoStart(enabled: Boolean) = viewModelScope.launch { AppSelection.setAutoStart(getApplication(), enabled) }
+    fun setMonitorAllApps(enabled: Boolean) = viewModelScope.launch { AppSelection.setMonitorAllApps(getApplication(), enabled) }
 
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
     val apps: StateFlow<List<AppItem>> = _apps

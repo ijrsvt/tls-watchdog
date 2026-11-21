@@ -32,6 +32,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
     private var flagUdp = false
     private var flagOldTls = false
     private var recordCap = 0
+    private var monitorAllApps = false
 
     // Correlate native flow ids with DB rows. onFlow (insert), onFlowClose (stats) and
     // onServerHello (TLS version) race, so guard the maps and stash whatever arrives
@@ -76,7 +77,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         flagUdp = runBlocking { AppSelection.getFlagUdp(this@TlsWatchdogVpnService) }
         flagOldTls = runBlocking { AppSelection.getFlagOldTls(this@TlsWatchdogVpnService) }
         recordCap = if (recordCleartext) runBlocking { AppSelection.getCap(this@TlsWatchdogVpnService) } else 0
-        if (selected.isEmpty()) {
+        monitorAllApps = runBlocking { AppSelection.getMonitorAllApps(this@TlsWatchdogVpnService) }
+        if (!monitorAllApps && selected.isEmpty()) {
             Log.w(TAG, "no apps selected; not starting")
             stopSelf()
             return
@@ -91,17 +93,28 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             .addRoute("::", 0)
 
         var added = 0
-        for (pkg in selected) {
+        if (monitorAllApps) {
+            // Full-system mode: route every app except ourselves (our own traffic is
+            // already protect()'d by zdtun's sockets, but excluding it too avoids any
+            // accidental tun loop from other code paths).
             try {
-                builder.addAllowedApplication(pkg)
-                added++
+                builder.addDisallowedApplication(packageName)
             } catch (e: PackageManager.NameNotFoundException) {
-                Log.w(TAG, "package not found, skipping: $pkg")
+                // can't happen for our own package
             }
-        }
-        if (added == 0) {
-            stopSelf()
-            return
+        } else {
+            for (pkg in selected) {
+                try {
+                    builder.addAllowedApplication(pkg)
+                    added++
+                } catch (e: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "package not found, skipping: $pkg")
+                }
+            }
+            if (added == 0) {
+                stopSelf()
+                return
+            }
         }
 
         val pfd: ParcelFileDescriptor = builder.establish() ?: run {
@@ -110,7 +123,8 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
             return
         }
 
-        val statusText = "Monitoring $added app(s)" + if (recordCleartext) " · recording cleartext" else ""
+        val statusText = (if (monitorAllApps) "Monitoring all apps" else "Monitoring $added app(s)") +
+            if (recordCleartext) " · recording cleartext" else ""
         ServiceCompat.startForeground(
             this,
             Notifications.FOREGROUND_ID,
@@ -122,7 +136,7 @@ class TlsWatchdogVpnService : VpnService(), VpnCallbacks {
         NativeBridge.nativeStartCapture(fd, MTU, recordCap, this)
         running = true
         VpnController.setRunning(true)
-        Log.i(TAG, "VPN started, monitoring $added apps")
+        Log.i(TAG, if (monitorAllApps) "VPN started, monitoring all apps" else "VPN started, monitoring $added apps")
     }
 
     private fun stopVpn() {

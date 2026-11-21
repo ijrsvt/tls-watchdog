@@ -122,6 +122,7 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
     val running by vm.running.collectAsState()
     val selected by vm.selected.collectAsState()
     val record by vm.recordCleartext.collectAsState()
+    val monitorAll by vm.monitorAllApps.collectAsState()
     val context = LocalContext.current
 
     Column(
@@ -131,8 +132,18 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
     ) {
         Text(if (running) "Monitoring active" else "Stopped", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
-        Text("${selected.size} app(s) selected")
+        Text(if (monitorAll) "All apps" else "${selected.size} app(s) selected")
         Spacer(Modifier.height(24.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = monitorAll, onCheckedChange = { vm.setMonitorAllApps(it) }, enabled = !running)
+            Text("  Monitor all apps (full system)", fontWeight = FontWeight.Medium)
+        }
+        Text(
+            "Routes every app's traffic through the watchdog instead of just the Apps tab selection.",
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.outline,
+        )
+        Spacer(Modifier.height(16.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = record, onCheckedChange = { vm.setRecordCleartext(it) }, enabled = !running)
@@ -151,10 +162,10 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
             }
             Button(onClick = { VpnController.stop(context) }) { Text("Stop") }
         } else {
-            Button(onClick = onStart, enabled = selected.isNotEmpty()) { Text("Start monitoring") }
-            if (selected.isEmpty()) {
+            Button(onClick = onStart, enabled = monitorAll || selected.isNotEmpty()) { Text("Start monitoring") }
+            if (!monitorAll && selected.isEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Text("Select at least one app in the Apps tab", fontSize = 13.sp)
+                Text("Select at least one app in the Apps tab, or enable \"Monitor all apps\"", fontSize = 13.sp)
             }
         }
     }
@@ -164,6 +175,7 @@ private fun MonitorTab(vm: MainViewModel, onStart: () -> Unit) {
 private fun AppsTab(vm: MainViewModel) {
     val apps by vm.apps.collectAsState()
     val selected by vm.selected.collectAsState()
+    val monitorAll by vm.monitorAllApps.collectAsState()
     var query by remember { mutableStateOf("") }
     var internetOnly by remember { mutableStateOf(true) }
     val shown = apps.filter {
@@ -171,6 +183,13 @@ private fun AppsTab(vm: MainViewModel) {
             (query.isBlank() || it.label.contains(query, true) || it.packageName.contains(query, true))
     }
     Column(Modifier.fillMaxSize()) {
+        if (monitorAll) {
+            Text(
+                "\"Monitor all apps\" is on (Monitor tab) — this selection is ignored until you turn it off.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
         OutlinedTextField(
             value = query, onValueChange = { query = it },
             label = { Text("Search apps") }, singleLine = true,

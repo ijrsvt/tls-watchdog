@@ -22,8 +22,9 @@ class BootReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val auto = AppSelection.observeAutoStart(context).first()
+                val monitorAll = AppSelection.getMonitorAllApps(context)
                 val apps = AppSelection.get(context)
-                if (auto && apps.isNotEmpty() && VpnService.prepare(context) == null) {
+                if (auto && (monitorAll || apps.isNotEmpty()) && VpnService.prepare(context) == null) {
                     VpnController.start(context)
                 }
             } catch (e: Exception) {

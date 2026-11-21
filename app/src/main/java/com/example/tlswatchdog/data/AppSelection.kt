@@ -78,4 +78,15 @@ object AppSelection {
     suspend fun setAutoStart(context: Context, enabled: Boolean) {
         context.dataStore.edit { it[AUTOSTART_KEY] = enabled }
     }
+
+    private val MONITOR_ALL_KEY = booleanPreferencesKey("monitor_all_apps")
+
+    fun observeMonitorAllApps(context: Context): Flow<Boolean> =
+        context.dataStore.data.map { it[MONITOR_ALL_KEY] ?: false }
+
+    suspend fun getMonitorAllApps(context: Context): Boolean = observeMonitorAllApps(context).first()
+
+    suspend fun setMonitorAllApps(context: Context, enabled: Boolean) {
+        context.dataStore.edit { it[MONITOR_ALL_KEY] = enabled }
+    }
 }
